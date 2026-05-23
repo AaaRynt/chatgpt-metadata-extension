@@ -3,10 +3,17 @@ let use24HourFormat = localStorage.getItem('chatgpt-timestamps-24h-format') !== 
 let useUserOnlyTimestamps = localStorage.getItem('chatgpt-timestamps-user-only') === 'true';
 
 function addExtension() {
+  const allSections = Array.from(document.querySelectorAll('section[data-turn-id]'));
+  const sectionIndexMap = new Map(allSections.map((section, index) => [section, index]));
+
   document.querySelectorAll('div[data-message-id]').forEach((div) => {
     // Skip if already has timestamp
     const section = div.closest('section[data-turn-id]');
     if (!section || section.dataset.timestampAdded) return;
+    if (section.querySelector('.chatgpt-timestamp')) {
+      section.dataset.timestampAdded = 'true';
+      return;
+    }
 
     const reactKey = Object.keys(div).find((k) => k.startsWith('__reactFiber$'));
     if (!reactKey) return;
@@ -30,8 +37,7 @@ function addExtension() {
     const weeks = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const format = (n) => n.toString().padStart(2, '0');
 
-    const allSections = Array.from(document.querySelectorAll('section[data-turn-id]'));
-    const sectionIndex = allSections.indexOf(section);
+    const sectionIndex = sectionIndexMap.get(section);
     const turnNumber = Math.floor(sectionIndex / 2) + 1;
 
     const modelSlug = div.dataset.messageModelSlug;
@@ -51,7 +57,7 @@ function addExtension() {
       let hours = date.getHours();
       const ampm = hours >= 12 ? 'PM' : 'AM';
       hours = hours % 12 || 12;
-      finalTime = `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())} ${weeks[date.getDay()]} ${format(date.getHours())}:${format(date.getMinutes())} ${ampm}`;
+      finalTime = `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())} ${weeks[date.getDay()]} ${format(hours)}:${format(date.getMinutes())} ${ampm}`;
     }
     formatted.push(finalTime);
     if (modelText) formatted.push(modelText);
@@ -80,9 +86,7 @@ function updateTimestamps() {
   // Remove all existing timestamps
   document.querySelectorAll('.chatgpt-timestamp').forEach((span) => span.remove());
   document.querySelectorAll('section[data-turn-id]').forEach((section) => {
-    if (section.dataset.timestampAdded) return;
-    const div = section.querySelector('div[data-message-id]');
-    if (!div) return;
+    delete section.dataset.timestampAdded;
   });
   // Re-add with new format
   addExtension();
