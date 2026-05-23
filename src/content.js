@@ -3,11 +3,12 @@ let use24HourFormat = localStorage.getItem('chatgpt-timestamps-24h-format') !== 
 let useUserOnlyTimestamps = localStorage.getItem('chatgpt-timestamps-user-only') === 'true';
 
 function addExtension() {
-  document.querySelectorAll('div[data-message-id]').forEach(div => {
+  document.querySelectorAll('div[data-message-id]').forEach((div) => {
     // Skip if already has timestamp
-    if (div.dataset.timestampAdded) return;
+    const section = div.closest('section[data-turn-id]');
+    if (!section || section.dataset.timestampAdded) return;
 
-    const reactKey = Object.keys(div).find(k => k.startsWith('__reactFiber$'));
+    const reactKey = Object.keys(div).find((k) => k.startsWith('__reactFiber$'));
     if (!reactKey) return;
 
     // Walk up the fiber tree to find the component with messages
@@ -27,11 +28,20 @@ function addExtension() {
 
     const date = new Date(timestamp * 1000);
     const weeks = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const format = n => n.toString().padStart(2, '0');
+    const format = (n) => n.toString().padStart(2, '0');
 
-    const turnNumber = Math.floor(Array.from(document.querySelectorAll('div[data-message-id]')).indexOf(div) / 2) + 1;
+    const allSections = Array.from(document.querySelectorAll('section[data-turn-id]'));
+    const sectionIndex = allSections.indexOf(section);
+    const turnNumber = Math.floor(sectionIndex / 2) + 1;
+
     const modelSlug = div.dataset.messageModelSlug;
-    const modelText = modelSlug ? modelSlug.replaceAll('-', '.').replace('gpt.', 'GPT-') : null;
+    const modelText =
+      modelSlug ?
+        modelSlug.replace(/gpt-(\d+)-(\d+)(?:-(\w+))?/i, (_, major, minor, type) => {
+          const suffix = type ? ' ' + type.charAt(0).toUpperCase() + type.slice(1) : '';
+          return `GPT-${major}.${minor}${suffix}`;
+        })
+      : null;
 
     let formatted = [turnNumber];
     let finalTime = '';
@@ -52,9 +62,9 @@ function addExtension() {
     span.textContent = formatted.join(' · ');
     span.className = 'chatgpt-timestamp';
     span.style.cssText = `
-      font-size: 12px;
+      font-size: 0.8rem;
       color: ${color};
-      margin-right: 8px;
+      margin-right: 1rem;
       margin-bottom: 2px;
       display: inline-block;
       font-family: 'JetBrains Mono', 'Maple Mono NF CN', Menlo;
@@ -62,15 +72,17 @@ function addExtension() {
     div.insertBefore(span, div.firstChild);
 
     // Mark as processed
-    div.dataset.timestampAdded = 'true';
+    section.dataset.timestampAdded = 'true';
   });
 }
 
 function updateTimestamps() {
   // Remove all existing timestamps
-  document.querySelectorAll('.chatgpt-timestamp').forEach(span => span.remove());
-  document.querySelectorAll('div[data-message-id]').forEach(div => {
-    delete div.dataset.timestampAdded;
+  document.querySelectorAll('.chatgpt-timestamp').forEach((span) => span.remove());
+  document.querySelectorAll('section[data-turn-id]').forEach((section) => {
+    if (section.dataset.timestampAdded) return;
+    const div = section.querySelector('div[data-message-id]');
+    if (!div) return;
   });
   // Re-add with new format
   addExtension();
@@ -100,7 +112,7 @@ const observer = new MutationObserver(() => {
 
 observer.observe(document.body, {
   childList: true,
-  subtree: true
+  subtree: true,
 });
 
 // Also run periodically to catch any missed messages
