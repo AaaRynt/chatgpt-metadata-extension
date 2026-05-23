@@ -59,7 +59,7 @@ function addExtension() {
       hours = hours % 12 || 12;
       finalTime = `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())} ${weeks[date.getDay()]} ${format(hours)}:${format(date.getMinutes())} ${ampm}`;
     }
-    if (modelText) formatted.unshift(`<span style="color:#98c379">${modelText}</span>`);
+    if (modelText) formatted.push(`<span style="color:#98c379">${modelText}</span>`);
     formatted.push(`<span style="color:#56b6c2">${finalTime}</span>`);
     formatted.push(`<span style="color:#c678dd">${turnNumber}</span>`);
 
