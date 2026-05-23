@@ -1,36 +1,19 @@
-# ChatGPT Timestamp Extension
+# ChatGPT Metadata Extension
 
-A simple Chrome & Firefox extension that displays timestamps for ChatGPT messages. The timestamps are already in the DOM - this just makes them visible.
+A fork of [ChatGPT Timestamp Extension](https://github.com/Hangzhi/chatgpt-timestamp-extension) with enhanced conversation metadata overlays for developers.
 
-## Installation
+## Adds
 
-**Chrome Add-on: [Install from Chrome Web Store](https://chromewebstore.google.com/detail/kdjfhglijhebcchcfkknicfaedhhfpmo?utm_source=item-share-cb)**
-
-**Firefox Add-on: [Install from Mozilla Add-on](https://addons.mozilla.org/firefox/addon/chatgpt-timestamp)**
+- Message index
+- Timestamps
+- Active model display
 
 ## Screenshot
 
-![ChatGPT with Timestamps](assets/screenshot.png)
+![1 · 2026-05-23 Sat 13:52 · GPT-5.5](assets/2026-05-23_14-18-41.png)
 
-## What it does
+## Manual install for Chrome
 
-Shows when each message was sent in a clean format: "May 12 2025 - 14:30:45"
-Options:
-- Toggle between 12-hour and 24-hour time
-- Timestamp only user posts to reduce visual clutter
-
-![Toggles](assets/toggles.gif)
-
-## Why I built this
-
-I kept losing track of old conversations and couldn't remember when discussions happened. Now I can find specific chats by date/time instead of scrolling endlessly.
-
-Also helpful for:
-- Knowing when you hit rate limits and when they reset
-- Tracking how long tasks take
-- Finding different versions when iterating on code
-
-## Manual install for Chrome ##
 1. Download this repo
 2. Open `chrome://extensions/`
 3. Enable Developer mode

@@ -1,7 +1,8 @@
+// fork from https://github.com/Hangzhi/chatgpt-timestamp-extension
 let use24HourFormat = localStorage.getItem('chatgpt-timestamps-24h-format') !== 'false';
 let useUserOnlyTimestamps = localStorage.getItem('chatgpt-timestamps-user-only') === 'true';
 
-function addTimestamps() {
+function addExtension() {
   document.querySelectorAll('div[data-message-id]').forEach(div => {
     // Skip if already has timestamp
     if (div.dataset.timestampAdded) return;
@@ -25,32 +26,38 @@ function addTimestamps() {
     if (useUserOnlyTimestamps && message?.author?.role !== 'user') return;
 
     const date = new Date(timestamp * 1000);
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const weeks = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const format = n => n.toString().padStart(2, '0');
 
-    let formatted;
+    const turnNumber = Math.floor(Array.from(document.querySelectorAll('div[data-message-id]')).indexOf(div) / 2) + 1;
+    const modelSlug = div.dataset.messageModelSlug;
+    const modelText = modelSlug ? modelSlug.replaceAll('-', '.').replace('gpt.', 'GPT-') : null;
+
+    let formatted = [turnNumber];
+    let finalTime = '';
     if (use24HourFormat) {
-      formatted = `${months[date.getMonth()]} ${date.getDate()} ${date.getFullYear()} - ${format(date.getHours())}:${format(date.getMinutes())}:${format(date.getSeconds())}`;
+      finalTime = `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())}  ${weeks[date.getDay()]} ${format(date.getHours())}:${format(date.getMinutes())}`;
     } else {
       let hours = date.getHours();
       const ampm = hours >= 12 ? 'PM' : 'AM';
       hours = hours % 12 || 12;
-      formatted = `${months[date.getMonth()]} ${date.getDate()} ${date.getFullYear()} - ${hours}:${format(date.getMinutes())}:${format(date.getSeconds())} ${ampm}`;
+      finalTime = `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())} ${weeks[date.getDay()]} ${format(date.getHours())}:${format(date.getMinutes())} ${ampm}`;
     }
+    formatted.push(finalTime);
+    if (modelText) formatted.push(modelText);
 
     const span = document.createElement('span');
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const color = isDark ? '#ccc' : '#555';
-    span.textContent = formatted;
+    const color = isDark ? '#ffffff' : '#000000';
+    span.textContent = formatted.join(' · ');
     span.className = 'chatgpt-timestamp';
     span.style.cssText = `
-      font-size: 11px;
+      font-size: 12px;
       color: ${color};
-      font-weight: 600;
       margin-right: 8px;
-      margin-bottom: 4px;
+      margin-bottom: 2px;
       display: inline-block;
-      font-family: ui-monospace, 'SF Mono', Monaco, monospace;
+      font-family: 'JetBrains Mono', 'Maple Mono NF CN', Menlo;
     `;
     div.insertBefore(span, div.firstChild);
 
@@ -66,7 +73,7 @@ function updateTimestamps() {
     delete div.dataset.timestampAdded;
   });
   // Re-add with new format
-  addTimestamps();
+  addExtension();
 }
 
 // Listen for storage changes
@@ -84,11 +91,11 @@ window.addEventListener('storage', (e) => {
 
 // Wait for page to fully load
 setTimeout(() => {
-  addTimestamps();
+  addExtension();
 }, 3000);
 
 const observer = new MutationObserver(() => {
-  setTimeout(addTimestamps, 500);
+  setTimeout(addExtension, 500);
 });
 
 observer.observe(document.body, {
@@ -97,4 +104,4 @@ observer.observe(document.body, {
 });
 
 // Also run periodically to catch any missed messages
-setInterval(addTimestamps, 5000);
+setInterval(addExtension, 5000);

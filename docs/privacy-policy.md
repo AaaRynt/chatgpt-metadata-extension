@@ -1,35 +1,57 @@
 # Privacy Policy
 
-## ChatGPT Timestamp Extension
+## ChatGPT Metadata Extension
 
-**Last updated:** January 2025
+**Last updated:** May 2026
 
-## Data Collection
+## Overview
 
-This extension does **not collect, store, or transmit any personal data or user information**.
+ChatGPT Metadata Extension operates entirely within the user's browser and does not collect, store, or transmit personal data to external servers.
 
-## How the Extension Works
+The extension enhances the ChatGPT interface by displaying metadata already available in the web application, such as:
 
-The ChatGPT Timestamp Extension:
+- message timestamps
+- model identifiers
+- message counters
+- conversation-related interface metadata
 
-- Operates entirely within your browser
-- Only reads timestamp data that is already present in ChatGPT's interface
-- Does not access your conversations or messages
-- Does not send any data to external servers
-- Does not use cookies or tracking mechanisms
+## Data Handling
+
+This extension:
+
+- does not collect personal information
+- does not upload conversation data
+- does not transmit prompts or responses to any external service
+- does not use analytics, tracking scripts, or cookies
+- does not sell or share user data
+
+All processing occurs locally inside the browser.
 
 ## Permissions
 
-This extension requires no special permissions and only runs on ChatGPT websites (chatgpt.com and chat.openai.com) to display timestamps.
+The extension only runs on ChatGPT domains, including:
+
+- `https://chatgpt.com/*`
+- `https://chat.openai.com/*`
+
+These permissions are used solely to modify the ChatGPT interface and display additional metadata to the user.
 
 ## Third-Party Services
 
-This extension does not integrate with or send data to any third-party services.
+This extension does not use or integrate with third-party services, external APIs, analytics platforms, or advertising networks.
+
+## Open Source
+
+The source code for this extension is publicly available on GitHub.
+
+Users may inspect, modify, or build the extension themselves.
 
 ## Contact
 
-If you have any questions about this privacy policy, please create an issue on our [GitHub repository](https://github.com/Hangzhi/chatgpt-timestamp-extension).
+For questions, issues, or suggestions, please open an issue on the GitHub repository:
+
+`https://github.com/AaaRynt/chatgpt-metadata-extension`
 
 ## Changes to This Policy
 
-Any changes to this privacy policy will be posted on this page and updated in the extension's repository.
+Any future updates to this privacy policy will be published in the project's GitHub repository.
