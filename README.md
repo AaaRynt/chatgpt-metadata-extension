@@ -7,10 +7,11 @@ A fork of [ChatGPT Timestamp Extension](https://github.com/Hangzhi/chatgpt-times
 - Message index
 - Timestamps
 - Active model display
+- _One dark_ / _Atom_ style
 
 ## Screenshot
 
-![1 · 2026-05-23 Sat 13:52 · GPT-5.5](assets/2026-05-23_14-18-41.png)
+![1 · 2026-05-23 Sat 13:52 · GPT-5.5](assets/2026-05-23_18-07-54.png)
 
 ## Manual install for Chrome
 

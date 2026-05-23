@@ -49,7 +49,7 @@ function addExtension() {
         })
       : null;
 
-    let formatted = [turnNumber];
+    const formatted = [];
     let finalTime = '';
     if (use24HourFormat) {
       finalTime = `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())}  ${weeks[date.getDay()]} ${format(date.getHours())}:${format(date.getMinutes())}`;
@@ -59,18 +59,18 @@ function addExtension() {
       hours = hours % 12 || 12;
       finalTime = `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())} ${weeks[date.getDay()]} ${format(hours)}:${format(date.getMinutes())} ${ampm}`;
     }
-    formatted.push(finalTime);
-    if (modelText) formatted.push(modelText);
+    if (modelText) formatted.unshift(`<span style="color:#98c379">${modelText}</span>`);
+    formatted.push(`<span style="color:#56b6c2">${finalTime}</span>`);
+    formatted.push(`<span style="color:#c678dd">${turnNumber}</span>`);
 
     const span = document.createElement('span');
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const color = isDark ? '#ffffff' : '#000000';
-    span.textContent = formatted.join(' · ');
+    span.innerHTML = formatted.join(`<span style="color:#ffffff"> · </span>`);
     span.className = 'chatgpt-timestamp';
     span.style.cssText = `
       font-size: 0.8rem;
-      color: ${color};
       margin-right: 1rem;
+      font-weight: 600;
       margin-bottom: 2px;
       display: inline-block;
       font-family: 'JetBrains Mono', 'Maple Mono NF CN', Menlo;
