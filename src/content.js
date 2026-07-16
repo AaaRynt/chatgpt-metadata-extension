@@ -3,9 +3,6 @@ let use24HourFormat = localStorage.getItem('chatgpt-timestamps-24h-format') !== 
 let useUserOnlyTimestamps = localStorage.getItem('chatgpt-timestamps-user-only') === 'true';
 
 function addExtension() {
-  const allSections = Array.from(document.querySelectorAll('section[data-turn-id]'));
-  const sectionIndexMap = new Map(allSections.map((section, index) => [section, index]));
-
   document.querySelectorAll('div[data-message-id]').forEach((div) => {
     // Skip if already has timestamp
     const section = div.closest('section[data-turn-id]');
@@ -37,13 +34,12 @@ function addExtension() {
     const weeks = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const format = (n) => n.toString().padStart(2, '0');
 
-    const sectionIndex = sectionIndexMap.get(section);
-    const turnNumber = Math.floor(sectionIndex / 2) + 1;
+    const turnId = section.dataset.testid;
+    const turnNumber = turnId ? Math.ceil(Number(turnId.replace('conversation-turn-', '')) / 2) : null;
 
     const modelSlug = div.dataset.messageModelSlug;
-    const modelText =
-      modelSlug ?
-        modelSlug.replace(/gpt-(\d+)-(\d+)(?:-(\w+))?/i, (_, major, minor, type) => {
+    const modelText = modelSlug
+      ? modelSlug.replace(/gpt-(\d+)-(\d+)(?:-(\w+))?/i, (_, major, minor, type) => {
           const suffix = type ? ' ' + type.charAt(0).toUpperCase() + type.slice(1) : '';
           return `GPT-${major}.${minor}${suffix}`;
         })
@@ -61,7 +57,7 @@ function addExtension() {
     }
     if (modelText) formatted.push(`<span style="color:#98c379">${modelText}</span>`);
     formatted.push(`<span style="color:#56b6c2">${finalTime}</span>`);
-    formatted.push(`<span style="color:#c678dd">${turnNumber}</span>`);
+    formatted.push(`<span style="color:#e06c75">${turnNumber}</span>`);
 
     const span = document.createElement('span');
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -73,7 +69,7 @@ function addExtension() {
       font-weight: 600;
       margin-bottom: 2px;
       display: inline-block;
-      font-family: 'JetBrains Mono', 'Maple Mono NF CN', Menlo;
+      font-family: 'Maple Mono NF CN', 'JetBrains Mono', Menlo;
     `;
     div.insertBefore(span, div.firstChild);
 
