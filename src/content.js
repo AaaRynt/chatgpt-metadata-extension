@@ -1,119 +1,100 @@
-// fork from https://github.com/Hangzhi/chatgpt-timestamp-extension
-let use24HourFormat = localStorage.getItem('chatgpt-timestamps-24h-format') !== 'false';
-let useUserOnlyTimestamps = localStorage.getItem('chatgpt-timestamps-user-only') === 'true';
+// Forked from https://github.com/Hangzhi/chatgpt-timestamp-extension
 
-function addExtension() {
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const TIMESTAMP_CLASS = 'chatgpt-timestamp';
+const METADATA_COLORS = {
+  model: '#98c379',
+  timestamp: '#56b6c2',
+  turnNumber: '#e06c75',
+  separator: '#ffffff',
+  fontFamily: "'Maple Mono NF CN', 'JetBrains Mono', Menlo",
+};
+
+function getMessage(div) {
+  const reactKey = Object.keys(div).find((key) => key.startsWith('__reactFiber$'));
+  if (!reactKey) return null;
+
+  let node = div[reactKey];
+  for (let depth = 0; depth < 15 && node; depth += 1) {
+    const message = node.memoizedProps?.messages?.[0];
+    if (message?.create_time) return message;
+    node = node.return;
+  }
+
+  return null;
+}
+
+function formatTimestamp(timestamp) {
+  const date = new Date(timestamp * 1000);
+  const format = (value) => String(value).padStart(2, '0');
+
+  return `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())} ${WEEKDAYS[date.getDay()]} ${format(date.getHours())}:${format(date.getMinutes())}`;
+}
+
+function formatModel(modelSlug) {
+  if (!modelSlug) return null;
+
+  return modelSlug.replace(/gpt-(\d+)-(\d+)(?:-(\w+))?/i, (_, major, minor, type) => {
+    const suffix = type ? ` ${type.charAt(0).toUpperCase()}${type.slice(1)}` : '';
+    return `GPT-${major}.${minor}${suffix}`;
+  });
+}
+
+function appendMetadataPart(container, text, color, prependSeparator) {
+  if (prependSeparator) {
+    const separator = document.createElement('span');
+    separator.textContent = ' · ';
+    separator.style.color = METADATA_COLORS.separator;
+    container.appendChild(separator);
+  }
+
+  const part = document.createElement('span');
+  part.textContent = text;
+  part.style.color = color;
+  container.appendChild(part);
+}
+
+function addMetadata() {
+  const assistantMessages = [];
+
   document.querySelectorAll('div[data-message-id]').forEach((div) => {
-    // Skip if already has timestamp
-    const section = div.closest('section[data-turn-id]');
-    if (!section || section.dataset.timestampAdded) return;
-    if (section.querySelector('.chatgpt-timestamp')) {
-      section.dataset.timestampAdded = 'true';
-      return;
-    }
+    const message = getMessage(div);
+    if (!message?.create_time || message.author?.role !== 'assistant') return;
 
-    const reactKey = Object.keys(div).find((k) => k.startsWith('__reactFiber$'));
-    if (!reactKey) return;
+    assistantMessages.push({ div, message });
+  });
 
-    // Walk up the fiber tree to find the component with messages
-    let node = div[reactKey];
-    let message;
-    for (let i = 0; i < 15 && node; i++) {
-      const messages = node.memoizedProps?.messages;
-      if (messages?.[0]?.create_time) {
-        message = messages[0];
-        break;
-      }
-      node = node.return;
-    }
-    const timestamp = message?.create_time;
-    if (!timestamp) return;
-    if (useUserOnlyTimestamps && message?.author?.role !== 'user') return;
+  assistantMessages.forEach(({ div, message }, index) => {
+    if (div.querySelector(`:scope > .${TIMESTAMP_CLASS}`)) return;
 
-    const date = new Date(timestamp * 1000);
-    const weeks = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const format = (n) => n.toString().padStart(2, '0');
+    const metadata = document.createElement('span');
+    const model = formatModel(div.dataset.messageModelSlug);
 
-    const turnId = section.dataset.testid;
-    const turnNumber = turnId ? Math.ceil(Number(turnId.replace('conversation-turn-', '')) / 2) : null;
-
-    const modelSlug = div.dataset.messageModelSlug;
-    const modelText = modelSlug
-      ? modelSlug.replace(/gpt-(\d+)-(\d+)(?:-(\w+))?/i, (_, major, minor, type) => {
-          const suffix = type ? ' ' + type.charAt(0).toUpperCase() + type.slice(1) : '';
-          return `GPT-${major}.${minor}${suffix}`;
-        })
-      : null;
-
-    const formatted = [];
-    let finalTime = '';
-    if (use24HourFormat) {
-      finalTime = `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())}  ${weeks[date.getDay()]} ${format(date.getHours())}:${format(date.getMinutes())}`;
-    } else {
-      let hours = date.getHours();
-      const ampm = hours >= 12 ? 'PM' : 'AM';
-      hours = hours % 12 || 12;
-      finalTime = `${date.getFullYear()}-${format(date.getMonth() + 1)}-${format(date.getDate())} ${weeks[date.getDay()]} ${format(hours)}:${format(date.getMinutes())} ${ampm}`;
-    }
-    if (modelText) formatted.push(`<span style="color:#98c379">${modelText}</span>`);
-    formatted.push(`<span style="color:#56b6c2">${finalTime}</span>`);
-    formatted.push(`<span style="color:#e06c75">${turnNumber}</span>`);
-
-    const span = document.createElement('span');
-    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    span.innerHTML = formatted.join(`<span style="color:#ffffff"> · </span>`);
-    span.className = 'chatgpt-timestamp';
-    span.style.cssText = `
+    metadata.className = TIMESTAMP_CLASS;
+    metadata.style.cssText = `
       font-size: 0.8rem;
       margin-right: 1rem;
       font-weight: 600;
       margin-bottom: 2px;
       display: inline-block;
-      font-family: 'Maple Mono NF CN', 'JetBrains Mono', Menlo;
+      font-family: ${METADATA_COLORS.fontFamily};
     `;
-    div.insertBefore(span, div.firstChild);
 
-    // Mark as processed
-    section.dataset.timestampAdded = 'true';
+    if (model) appendMetadataPart(metadata, model, METADATA_COLORS.model, false);
+    appendMetadataPart(metadata, formatTimestamp(message.create_time), METADATA_COLORS.timestamp, Boolean(model));
+    appendMetadataPart(metadata, String(index + 1), METADATA_COLORS.turnNumber, true);
+
+    div.insertBefore(metadata, div.firstChild);
   });
 }
 
-function updateTimestamps() {
-  // Remove all existing timestamps
-  document.querySelectorAll('.chatgpt-timestamp').forEach((span) => span.remove());
-  document.querySelectorAll('section[data-turn-id]').forEach((section) => {
-    delete section.dataset.timestampAdded;
-  });
-  // Re-add with new format
-  addExtension();
-}
+let pendingUpdate;
+const scheduleMetadataUpdate = () => {
+  window.clearTimeout(pendingUpdate);
+  pendingUpdate = window.setTimeout(addMetadata, 300);
+};
 
-// Listen for storage changes
-window.addEventListener('storage', (e) => {
-  if (e.key === 'chatgpt-timestamps-24h-format') {
-    use24HourFormat = e.newValue !== 'false';
-    updateTimestamps();
-    return;
-  }
-  if (e.key === 'chatgpt-timestamps-user-only') {
-    useUserOnlyTimestamps = e.newValue === 'true';
-    updateTimestamps();
-  }
-});
+scheduleMetadataUpdate();
 
-// Wait for page to fully load
-setTimeout(() => {
-  addExtension();
-}, 3000);
-
-const observer = new MutationObserver(() => {
-  setTimeout(addExtension, 500);
-});
-
-observer.observe(document.body, {
-  childList: true,
-  subtree: true,
-});
-
-// Also run periodically to catch any missed messages
-setInterval(addExtension, 5000);
+const observer = new MutationObserver(scheduleMetadataUpdate);
+observer.observe(document.body, { childList: true, subtree: true });

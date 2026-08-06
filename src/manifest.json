@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Metadata Extension",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "browser_specific_settings": {
     "gecko": {
       "id": "chatgpt-metadata-extension@example.com",
@@ -17,21 +17,13 @@
     "48": "icon-48.png",
     "128": "icon.png"
   },
-  "action": {
-    "default_popup": "popup.html",
-    "default_icon": {
-      "16": "icon-16.png",
-      "48": "icon-48.png",
-      "128": "icon.png"
-    }
-  },
   "content_scripts": [
     {
       "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
+      "exclude_matches": ["https://chat.openai.com/backend-api/*", "https://chatgpt.com/backend-api/*"],
       "js": ["content.js"],
       "run_at": "document_idle",
       "world": "MAIN"
     }
-  ],
-  "permissions": ["activeTab", "scripting"]
+  ]
 }
