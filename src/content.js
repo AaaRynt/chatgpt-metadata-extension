@@ -40,6 +40,14 @@ function formatModel(modelSlug) {
   });
 }
 
+function getTurnNumber(div) {
+  const section = div.closest('section[data-testid^="conversation-turn-"]');
+  const match = section?.dataset.testid?.match(/^conversation-turn-(\d+)$/);
+  if (!match) return null;
+
+  return Math.ceil(Number(match[1]) / 2);
+}
+
 function appendMetadataPart(container, text, color, prependSeparator) {
   if (prependSeparator) {
     const separator = document.createElement('span');
@@ -65,12 +73,19 @@ function addMetadata() {
   });
 
   assistantMessages.forEach(({ div, message }, index) => {
-    if (div.querySelector(`:scope > .${TIMESTAMP_CLASS}`)) return;
-
-    const metadata = document.createElement('span');
     const model = formatModel(div.dataset.messageModelSlug);
+    const turnNumber = getTurnNumber(div) ?? index + 1;
+    const signature = `${model ?? ''}|${message.create_time}|${turnNumber}`;
+    let metadata = div.querySelector(`:scope > .${TIMESTAMP_CLASS}`);
 
-    metadata.className = TIMESTAMP_CLASS;
+    if (metadata?.dataset.signature === signature) return;
+
+    if (!metadata) {
+      metadata = document.createElement('span');
+      metadata.className = TIMESTAMP_CLASS;
+      div.insertBefore(metadata, div.firstChild);
+    }
+
     metadata.style.cssText = `
       font-size: 0.8rem;
       margin-right: 1rem;
@@ -80,11 +95,12 @@ function addMetadata() {
       font-family: ${METADATA_COLORS.fontFamily};
     `;
 
+    metadata.replaceChildren();
+    metadata.dataset.signature = signature;
+
     if (model) appendMetadataPart(metadata, model, METADATA_COLORS.model, false);
     appendMetadataPart(metadata, formatTimestamp(message.create_time), METADATA_COLORS.timestamp, Boolean(model));
-    appendMetadataPart(metadata, String(index + 1), METADATA_COLORS.turnNumber, true);
-
-    div.insertBefore(metadata, div.firstChild);
+    appendMetadataPart(metadata, String(turnNumber), METADATA_COLORS.turnNumber, true);
   });
 }
 
