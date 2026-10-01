@@ -1,0 +1,50 @@
+{
+  "description": "Structural extract of the user-provided October 2026 saved ChatGPT HTML. Message/conversation IDs are anonymized; all text and scripts are omitted.",
+  "nodes": [
+    {
+      "tag": "div",
+      "attrs": {
+        "data-chatgpt-search-unit-key": "fallback-turn-0:0:user",
+        "data-chatgpt-search-message-ids": "message-1",
+        "class": "group/user-message flex flex-col items-end gap-2"
+      },
+      "children": [
+        {
+          "tag": "div",
+          "attrs": {
+            "data-content-search-unit-key": "fallback-turn-0:0:user",
+            "class": "w-full"
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "tag": "div",
+      "attrs": {
+        "data-content-search-unit-key": "fallback-turn-0:2:assistant",
+        "data-chatgpt-search-unit-key": "fallback-turn-0:2:assistant",
+        "data-chatgpt-search-message-ids": "message-2 message-2"
+      },
+      "children": [
+        {
+          "tag": "h4",
+          "attrs": {
+            "data-conversation-role": "assistant",
+            "class": "sr-only m-0 select-none"
+          },
+          "children": []
+        },
+        {
+          "tag": "div",
+          "attrs": {
+            "data-chatgpt-selection-conversation-id": "conversation-example",
+            "data-chatgpt-selection-message-id": "message-2",
+            "class": "group flex min-w-0 flex-col"
+          },
+          "children": []
+        }
+      ]
+    }
+  ]
+}
