@@ -278,7 +278,8 @@
       .trim()
       .replace(/^gpt-(\d+)-(\d+)(?=-|$)/i, 'GPT-$1.$2')
       .replace(/^gpt-/i, 'GPT-')
-      .replace(/-(thinking|pro|instant|mini|nano|max)$/i, (_, tier) => ` ${tier[0].toUpperCase()}${tier.slice(1).toLowerCase()}`);
+      .replace(/^(GPT-[^-]+)-auto(?=-(?:thinking|pro|instant|mini|nano|max)$)/i, '$1')
+      .replace(/-(thinking|pro|instant|mini|nano|max|auto)$/i, (_, tier) => ` ${tier[0].toUpperCase()}${tier.slice(1).toLowerCase()}`);
   }
 
   function getAssistantMessages() {

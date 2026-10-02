@@ -195,6 +195,12 @@ test('normalizes real timestamps and preserves unknown model names', () => {
   assert.equal(api.normalizeTimestamp('2026-10-01T00:00:00Z'), 1790812800000);
   assert.equal(api.normalizeTimestamp(1790812800000), 1790812800000);
   assert.equal(api.formatModel('gpt-5-6-thinking'), 'GPT-5.6 Thinking');
+  assert.equal(api.formatModel('gpt-5-4-auto-thinking'), 'GPT-5.4 Thinking');
+  assert.equal(api.formatModel('gpt-5.4-auto-thinking'), 'GPT-5.4 Thinking');
+  assert.equal(api.formatModel('GPT-5-4-AUTO-THINKING'), 'GPT-5.4 Thinking');
+  assert.equal(api.formatModel('gpt-5-4-auto-instant'), 'GPT-5.4 Instant');
+  assert.equal(api.formatModel('gpt-5-4-auto'), 'GPT-5.4 Auto');
+  assert.equal(api.formatModel('gpt-5-4-auto-experimental'), 'GPT-5.4-auto-experimental');
   assert.equal(api.formatModel('gpt-6-pro'), 'GPT-6 Pro');
   assert.equal(api.formatModel('gpt-4o-mini'), 'GPT-4o Mini');
   assert.equal(api.formatModel('new_model_v2'), 'new_model_v2');
@@ -556,7 +562,8 @@ test('snapshot from another conversation and ambiguous live mappings are rejecte
   assert.equal(envWrong.api.collectLiveMetadata(envWrong.api.getAssistantMessages()).size, 0);
   const ambiguous = makeLiveTurn();
   ambiguous.owner.memoizedState.next = {
-    memoizedState: { renderedConversation: { mapping: { ...ambiguous.mapping } }, renderedTurns: [ambiguous.entry] }, next: null,
+    memoizedState: { renderedConversation: { mapping: { ...ambiguous.mapping } }, renderedTurns: [ambiguous.entry] },
+    next: null,
   };
   const env = setup({ nodes: [ambiguous.turn] });
   assert.equal(badge(ambiguous.surface), null);
@@ -598,10 +605,11 @@ test('live metadata refresh replaces model/time and preserves canonical branch n
 test('five-turn synthetic render window does not become answer 5 when canonical answer is 30', async () => {
   const live = makeLiveTurn(30);
   const rendered = { root: { id: 'root', parent: null, message: null } };
-  for (let i = 26; i <= 30; i++) for (const prefix of ['u', 'r', 't', 'a']) {
-    const id = `${prefix}${i}`;
-    rendered[id] = { ...live.mapping[id] };
-  }
+  for (let i = 26; i <= 30; i++)
+    for (const prefix of ['u', 'r', 't', 'a']) {
+      const id = `${prefix}${i}`;
+      rendered[id] = { ...live.mapping[id] };
+    }
   rendered.u26.parent = 'root';
   live.snapshot.renderedConversation.mapping = rendered;
   const env = setup({ nodes: [live.turn], fetch: () => response({ mapping: live.mapping, current_node: 'a30' }) });
@@ -659,17 +667,22 @@ function flatMessages(first, last, { parentLinks = false } = {}) {
 }
 
 const historyPage = (messages, more, cursor = 'cursor', currentNode = 'a30') => ({
-  conversation_id: 'A', current_node: currentNode, messages,
+  conversation_id: 'A',
+  current_node: currentNode,
+  messages,
   page_info: { start_cursor: cursor, end_cursor: 'end', has_previous_page: more, has_next_page: false },
 });
 
 test('plural messages endpoint loads all older pages and gives global answer 30', async () => {
   const live = makeLiveTurn(30);
-  const env = setup({ nodes: [live.turn], fetch: (url) => {
-    if (!url.includes('&before=')) return response(historyPage(flatMessages(26, 30), true, 'older/+?&='));
-    if (url.endsWith(encodeURIComponent('older/+?&='))) return response(historyPage(flatMessages(11, 26), true, 'oldest'));
-    return response(historyPage(flatMessages(1, 11), false));
-  } });
+  const env = setup({
+    nodes: [live.turn],
+    fetch: (url) => {
+      if (!url.includes('&before=')) return response(historyPage(flatMessages(26, 30), true, 'older/+?&='));
+      if (url.endsWith(encodeURIComponent('older/+?&='))) return response(historyPage(flatMessages(11, 26), true, 'oldest'));
+      return response(historyPage(flatMessages(1, 11), false));
+    },
+  });
   await env.advance(500);
   assert.equal(env.calls.length, 3);
   assert.match(env.calls[1][0], /&before=older%2F%2B%3F%26%3D$/);
@@ -697,7 +710,9 @@ test('newest-first pages with missing tool timestamps are assembled in chronolog
   const live = makeLiveTurn(30);
   const makePage = (first, last, more) => {
     const messages = flatMessages(first, last);
-    messages.forEach((message) => { if (message.author.role === 'tool') message.create_time = null; });
+    messages.forEach((message) => {
+      if (message.author.role === 'tool') message.create_time = null;
+    });
     return historyPage(messages.reverse(), more, 'earlier');
   };
   const env = setup({ nodes: [live.turn], fetch: (url) => response(url.includes('&before=') ? makePage(1, 25, false) : makePage(26, 30, true)) });
@@ -708,7 +723,7 @@ test('newest-first pages with missing tool timestamps are assembled in chronolog
 
 test('404 on plural path falls back once to the legacy mapping endpoint', async () => {
   const live = makeLiveTurn(30);
-  const env = setup({ nodes: [live.turn], fetch: (url) => url.includes('/conversations/') ? response({}, 404) : response({ mapping: live.mapping, current_node: 'a30' }) });
+  const env = setup({ nodes: [live.turn], fetch: (url) => (url.includes('/conversations/') ? response({}, 404) : response({ mapping: live.mapping, current_node: 'a30' })) });
   await env.advance(500);
   assert.equal(env.calls.length, 2);
   assert.equal(env.calls[1][0], '/backend-api/conversation/A');
@@ -736,11 +751,7 @@ test('repeated cursors stop pagination before publishing partial numbers', async
 });
 
 test('pagination rejects conversation/branch changes and cross-page parent conflicts', async () => {
-  for (const changed of [
-    { conversation_id: 'another-conversation' },
-    { current_node: 'another-head' },
-    { messages: [{ ...flatMessages(26, 26, { parentLinks: true })[0], parent_message_id: 'different-parent' }] },
-  ]) {
+  for (const changed of [{ conversation_id: 'another-conversation' }, { current_node: 'another-head' }, { messages: [{ ...flatMessages(26, 26, { parentLinks: true })[0], parent_message_id: 'different-parent' }] }]) {
     const live = makeLiveTurn(30);
     const env = setup({ nodes: [live.turn], fetch: (url) => response(url.includes('&before=') ? { ...historyPage(flatMessages(1, 26, { parentLinks: true }), false), ...changed } : historyPage(flatMessages(26, 30, { parentLinks: true }), true)) });
     await env.advance(500);
@@ -753,7 +764,15 @@ test('pagination rejects conversation/branch changes and cross-page parent confl
 test('navigation cancels in-progress pagination without applying its result to a new conversation', async () => {
   const live = makeLiveTurn(30);
   let finishOlder;
-  const env = setup({ nodes: [live.turn], fetch: (url) => url.includes('&before=') ? new Promise((resolve) => { finishOlder = resolve; }) : response(historyPage(flatMessages(26, 30), true)) });
+  const env = setup({
+    nodes: [live.turn],
+    fetch: (url) =>
+      url.includes('&before=')
+        ? new Promise((resolve) => {
+            finishOlder = resolve;
+          })
+        : response(historyPage(flatMessages(26, 30), true)),
+  });
   await env.advance(500);
   assert.equal(env.calls.length, 2);
   env.context.location.pathname = '/c/B';
