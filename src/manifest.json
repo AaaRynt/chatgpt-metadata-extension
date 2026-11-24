@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Metadata Extension",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "browser_specific_settings": {
     "gecko": {
       "id": "chatgpt-metadata-extension@example.com",
@@ -22,7 +22,7 @@
       "matches": ["https://chat.openai.com/*", "https://chatgpt.com/*"],
       "exclude_matches": ["https://chat.openai.com/backend-api/*", "https://chatgpt.com/backend-api/*"],
       "js": ["content.js"],
-      "run_at": "document_idle",
+      "run_at": "document_start",
       "world": "MAIN"
     }
   ]

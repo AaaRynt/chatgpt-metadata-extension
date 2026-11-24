@@ -28,19 +28,39 @@ After changing the source, reload the extension in `chrome://extensions/` and re
 
 ## How metadata is loaded
 
-The extension matches assistant message IDs in both legacy and redesigned ChatGPT pages. On the redesigned page, it locates React's committed component tree and validates the current conversation's live `renderedConversation.mapping` snapshot using the approach from [Hangzhi's September 2026 fix](https://github.com/Hangzhi/chatgpt-timestamp-extension/commit/bafbe3bc045e075eef0cef5bc19b89da74128383). It reads the selected final answer's timestamp and model from that snapshot. A reasoning or tool message does not supply the final answer's timestamp.
+The content script starts in the page's main world at `document_start`, before ChatGPT loads its conversation. It observes successful same-origin conversation GET responses without delaying ChatGPT's fetch promise or consuming its response body. It immediately reduces the JSON to message IDs, roles, timestamps, model names, parent links and pagination flags. It does not save conversation text, attachments, session responses or authentication tokens.
 
-To determine global answer numbers, the extension requests ChatGPT's `/backend-api/conversations/{id}?include_has_versions=true&num_turns=100` endpoint. It reads the new `messages[]` response and loads older pages using `page_info.start_cursor` and `before` until the server confirms the start of history. On a 404, it tries the legacy `/backend-api/conversation/{id}` mapping endpoint. If authentication is required, it obtains the current session token from `/api/auth/session` and keeps it only in memory.
+The November 2026 browser investigation found that ChatGPT's own authenticated request returned **200**, while an independent extension fetch to the same conversation returned **404**, even with same-origin cookies. The previous implementation treated 404 as an obsolete endpoint and tried a second path; its authentication fallback only ran on 401/403. Consequently it never acquired complete history and suppressed every global number. Scrolling changed the missing-message retry key, repeatedly restarting those unsuccessful requests. This was not a DOM-only scrolling problem.
 
-Answer numbers are calculated from the separately requested complete message history, grouping reasoning, tool calls, and final output after one prompt into one answer. The live rendered snapshot is not a source of global numbers: it can contain only a recent window, with its own synthetic root. Numbers do not depend on the currently mounted DOM or this render window. Explicitly partial responses, detached message roots, and missing ancestry mean the number is omitted rather than estimated. Missing timestamps and models are also omitted. The ability to recover a global number depends on ChatGPT making the complete selected history available. Reads are limited to 100 pages, 50,000 messages, and 60 seconds per attempt; incomplete or changing history does not receive an estimated number.
+For the observed `messages[]` schema, the extension uses the selected branch's server order, not timestamp sorting or DOM order. `page_info.has_previous_page` and `start_cursor` drive older-history pagination using `before`. A small initial window is expanded with `num_turns=100`; history is published as globally numbered only after the start and selected head are accounted for. The browser verified that this page size is supported. `metadata.parent_id` is not treated as a complete mapping edge: the observed flat branch contains intermediate reasoning and tool messages. Explicit graph responses still use actual node parent links.
 
-Home, temporary-chat, and shared pages without a `/c/{id}` URL may only have DOM model information. This implementation depends on ChatGPT's internal React state, conversation endpoint, and message attributes, which can change.
+Backfill passes the successful page request's context through opaquely, only to that same observed conversation endpoint. It never extracts an Authorization value, requests `/api/auth/session`, or stores a credential for future requests. The request context is released after the bounded backfill. Each job allows at most 100 history pages, 50,000 messages and 60 seconds. Network/server failures receive at most two retries; rate limits honor `Retry-After`. A 404 does not trigger an invented endpoint fallback or a retry loop.
 
-If metadata is missing, the page Console can report lookup counts without message text or tokens:
+Each user prompt and its subsequent assistant messages form one answer group. Reasoning, tool activity, intermediate UI messages and final output do not each increment the number. Message IDs identify the displayed answer; a selected final answer never borrows another message's timestamp or model. Numbers and metadata are held in memory independently of mounted DOM elements. Partial responses cannot erase a proven number. A small per-conversation memory cache survives SPA navigation; route changes abort obsolete work and invalidate late results.
+
+For a newly generated or regenerated answer that is not yet in saved history, a bounded React committed-state lookup may supply time/model and connect the selected answer to an already numbered ancestor or known user prompt. A synthetic render root alone is never evidence for answer 1. This fallback only runs for missing metadata; loaded, cached answers do not need React internals. DOM mutations schedule rendering without polling or starting history requests. UI styling, model formatting and timestamp formatting remain unchanged.
+
+Home, temporary-chat and shared pages without a `/c/{id}` URL may only have DOM model information. If the initial history request was missed (for example, after manually injecting the script into an already loaded page), refresh ChatGPT. The implementation depends on internal conversation schemas and message attributes, which can change; unavailable or unproven metadata is omitted.
+
+For counts and status without message text or credentials, run:
 
 ```js
 window[Symbol.for('chatgpt-metadata-extension')]?.diagnostics();
 ```
+
+`observedResponses` confirms that a page history response was captured; `historyComplete`, `historyPageCount` and `canonicalNodeCount` describe the last history load. `cachedNumberedMessageCount` includes answers subsequently anchored in live state, and `historyRequestInFlight` identifies an active backfill. React lookup counts can legitimately be zero when all visible metadata is cached.
+
+## Real-browser verification
+
+Verified with the locally installed unpacked extension reloaded, then ChatGPT refreshed, on 2026-11-24. Only designated test conversations were used. No real message text, account data or conversation IDs are included in the fixtures.
+
+- Three long conversations recovered global last-answer numbers 33, 16 and 143. The largest required three history pages; only one to three answers were mounted at once.
+- The short conversation displayed 1–3 after refresh; two test prompts produced 4 and 5 without reloading history. Streaming DOM updates were observed, with the final metadata resolving to the same global sequence.
+- A test prompt appended to a long conversation received 17. Retrying that answer and editing the test prompt into an alternate branch both retained 17 with different answer IDs. Refreshing preserved the result.
+- Real keyboard scrolling moved the 143-answer conversation back through 140, 138 and 137, then forward to 143. Previously mounted elements were replaced; numbers survived and the extension did not start additional backfills.
+- SPA navigation between the designated short and long conversations exercised cancellation, conversation scoping and cached rendering.
+
+These checks are evidence for the observed ChatGPT deployment, not a guarantee against future internal changes. The automated fixtures cover the observed structure with invented IDs and no conversation bodies.
 
 ## Local checks
 

@@ -99,7 +99,7 @@ const conversation = (...messages) => {
 };
 const apiMessage = (id, create_time = 1790812800, metadata = { model_slug: 'gpt-5-6-thinking' }) => ({ id, create_time, metadata, author: { role: 'assistant' } });
 const response = (data, status = 200, headers) => new Response(JSON.stringify(data), { status, headers });
-const source = readFileSync(require.resolve('../src/content.js'), 'utf8').replace(/  updateMetadata\(\);\n\}\)\(\);\s*$/, '  globalThis.testAPI = { getConversationId, normalizeTimestamp, formatTimestamp, formatModel, readConversation, getAssistantMessages, getBranchTurnNumber, getCommittedFiber, findLiveSnapshot, collectLiveMetadata, updateMetadata, scheduleRender, loadMetadata, observer };\n  updateMetadata();\n})();');
+const source = readFileSync(require.resolve('../src/content.js'), 'utf8').replace(/  updateMetadata\(\);\n\}\)\(\);\s*$/, '  globalThis.testAPI = { getConversationId, normalizeTimestamp, formatTimestamp, formatModel, readConversation, getAssistantMessages, getBranchTurnNumber, getCommittedFiber, findLiveSnapshot, collectLiveMetadata, updateMetadata, scheduleRender, loadMetadata, fetchConversation, readFlatHistory, readFlatMessage, projectHistory, requestConversationJson, observer };\n  updateMetadata();\n})();');
 
 function setup({ path = '/c/A', nodes = [message('a')], fetch = () => response(conversation(apiMessage('a'))) } = {}) {
   let now = 0;
@@ -145,7 +145,9 @@ function setup({ path = '/c/A', nodes = [message('a')], fetch = () => response(c
   const context = vm.createContext({
     window,
     document,
-    location: { pathname: path },
+    location: { pathname: path, origin: 'https://chatgpt.com', href: 'https://chatgpt.com' + path },
+    URL,
+    Request,
     AbortController,
     console: { warn: (...args) => warnings.push(args) },
     Date: class extends Date {
@@ -187,203 +189,6 @@ function setup({ path = '/c/A', nodes = [message('a')], fetch = () => response(c
 
 const badge = (node) => node.querySelector(':scope > .chatgpt-timestamp');
 
-test('normalizes real timestamps and preserves unknown model names', () => {
-  const { api } = setup({ nodes: [] });
-  for (const value of [null, undefined, '', 'garbage', 0, -1, NaN, Infinity, 1e20]) assert.equal(api.normalizeTimestamp(value), null);
-  assert.equal(api.normalizeTimestamp(1790812800), 1790812800000);
-  assert.equal(api.normalizeTimestamp('1790812800'), 1790812800000);
-  assert.equal(api.normalizeTimestamp('2026-10-01T00:00:00Z'), 1790812800000);
-  assert.equal(api.normalizeTimestamp(1790812800000), 1790812800000);
-  assert.equal(api.formatModel('gpt-5-6-thinking'), 'GPT-5.6 Thinking');
-  assert.equal(api.formatModel('gpt-5-4-auto-thinking'), 'GPT-5.4 Thinking');
-  assert.equal(api.formatModel('gpt-5.4-auto-thinking'), 'GPT-5.4 Thinking');
-  assert.equal(api.formatModel('GPT-5-4-AUTO-THINKING'), 'GPT-5.4 Thinking');
-  assert.equal(api.formatModel('gpt-5-4-auto-instant'), 'GPT-5.4 Instant');
-  assert.equal(api.formatModel('gpt-5-4-auto'), 'GPT-5.4 Auto');
-  assert.equal(api.formatModel('gpt-5-4-auto-experimental'), 'GPT-5.4-auto-experimental');
-  assert.equal(api.formatModel('gpt-6-pro'), 'GPT-6 Pro');
-  assert.equal(api.formatModel('gpt-4o-mini'), 'GPT-4o Mini');
-  assert.equal(api.formatModel('new_model_v2'), 'new_model_v2');
-  assert.equal(api.formatModel('  '), null);
-  assert.match(api.formatTimestamp(1790812800000), /^\d{4}-\d{2}-\d{2} \w{3} \d{2}:\d{2}$/);
-});
-
-test('maps all assistant branches by ID and prefers resolved model metadata', () => {
-  const { api } = setup({ nodes: [] });
-  const data = api.readConversation(conversation(apiMessage('a', 1790812800, { resolved_model_slug: 'actual', server_ste_metadata: { model_slug: 'routed' }, model_slug: 'default' }), apiMessage('b', null, { server_ste_metadata: { model_slug: 'routed' } }), { id: 'user', author: { role: 'user' }, create_time: 1790812800 }));
-  assert.equal(data.size, 2);
-  assert.equal(data.get('a').model, 'actual');
-  assert.equal(data.get('b').model, 'routed');
-  assert.equal(data.get('b').timestamp, null);
-  assert.throws(() => api.readConversation({ error: 'denied' }), /Unsupported/);
-});
-
-test('renders existing conversation without React internals and is idempotent', async () => {
-  const user = message('u', 'user');
-  const assistant = message('a');
-  const env = setup({ nodes: [user, assistant] });
-  assert.equal(badge(assistant).textContent, 'GPT-6 Pro');
-  await env.advance(500);
-  assert.equal(env.calls.length, 1);
-  assert.equal(badge(user), null);
-  assert.match(badge(assistant).textContent, /^GPT-5\.6 Thinking · \d{4}-.* · 1$/);
-  const writes = badge(assistant).writes;
-  env.api.updateMetadata();
-  assert.equal(badge(assistant).writes, writes);
-  await env.advance(60000);
-  assert.equal(env.calls.length, 1);
-});
-
-test('handles nested role attributes, non-div messages, hidden branches and duplicate IDs', () => {
-  const wrapper = new Element({ 'data-message-author-role': 'assistant' });
-  const inner = new Element({ 'data-message-id': 'nested' });
-  wrapper.appendChild(inner);
-  const outer = new Element({ 'data-message-id': 'outer' });
-  outer.appendChild(new Element({ 'data-message-author-role': 'assistant' }));
-  const hidden = message('hidden');
-  hidden.attributes.hidden = '';
-  const env = setup({ nodes: [wrapper, outer, hidden, message('nested')] });
-  assert.deepEqual(
-    Array.from(env.api.getAssistantMessages(), ({ id }) => id),
-    ['nested', 'outer'],
-  );
-  assert.equal(badge(inner), null);
-  assert.equal(badge(outer), null);
-});
-
-test('retries delayed saves and gives new responses their branch answer number', async () => {
-  const first = message('a');
-  let saved = false;
-  const env = setup({ nodes: [first], fetch: () => response(conversation(apiMessage('a'), ...(saved ? [apiMessage('b')] : []))) });
-  await env.advance(500);
-  const second = message('b');
-  env.root.appendChild(second);
-  env.mutate(env.root, 'childList', [second]);
-  await env.advance(3000);
-  assert.equal(badge(second).textContent, 'GPT-6 Pro');
-  saved = true;
-  await env.advance(3000);
-  assert.match(badge(second).textContent, /Thinking · \d{4}-.* · 2$/);
-  assert.equal(env.calls.length, 3);
-});
-
-test('authenticated fallback keeps the token out of rendered UI and warnings', async () => {
-  const env = setup({
-    fetch: (url, options) => {
-      if (url === '/api/auth/session') return response({ accessToken: 'test-token' });
-      if (!options.headers.Authorization) return response({}, 401);
-      return response(conversation(apiMessage('a')));
-    },
-  });
-  await env.advance(500);
-  assert.equal(env.calls.length, 3);
-  assert.equal(env.calls[2][1].headers.Authorization, 'Bearer test-token');
-  assert.match(badge(env.root.firstChild).textContent, /Thinking/);
-  assert.equal(env.warnings.length, 0);
-  assert.doesNotMatch(env.root.textContent, /test-token/);
-});
-
-test('stale A→B→A response cannot overwrite current conversation metadata', async () => {
-  let resolveOld;
-  const env = setup({
-    fetch: () =>
-      env.calls.length === 1
-        ? new Promise((resolve) => {
-            resolveOld = resolve;
-          })
-        : response(conversation(apiMessage('a', 1790812800, { model_slug: 'current-model' }))),
-  });
-  await env.advance(500);
-  const oldSignal = env.calls[0][1].signal;
-  env.context.location.pathname = '/c/B';
-  env.api.updateMetadata();
-  env.context.location.pathname = '/c/A';
-  env.api.updateMetadata();
-  assert.equal(oldSignal.aborted, true);
-  await env.advance(500);
-  resolveOld(response(conversation(apiMessage('a', 1, { model_slug: 'stale-model' }))));
-  await env.flush();
-  assert.match(badge(env.root.firstChild).textContent, /^current-model/);
-});
-
-test('home and share pages do not make conversation requests', async () => {
-  for (const path of ['/', '/share/id', '/g/custom', '/?temporary-chat=true']) {
-    const env = setup({ path });
-    await env.advance(120000);
-    assert.equal(env.calls.length, 0);
-    assert.equal(badge(env.root.firstChild).textContent, 'GPT-6 Pro');
-  }
-  const env = setup({ path: '/g/project/c/ABC' });
-  await env.advance(500);
-  assert.equal(env.calls[0][0], '/backend-api/conversations/ABC?include_has_versions=true&num_turns=100');
-});
-
-test('missing or invalid timestamps have bounded retries and never invent dates', async () => {
-  const env = setup({ fetch: () => response(conversation(apiMessage('a', null))) });
-  await env.advance(120000);
-  assert.equal(env.calls.length, 6);
-  assert.equal(badge(env.root.firstChild).textContent, 'GPT-5.6 Thinking · 1');
-  assert.equal(env.timers.size, 0);
-  await env.advance(120000);
-  assert.equal(env.calls.length, 6);
-});
-
-test('own DOM mutations and unrelated page mutations do not restart exhausted retries', async () => {
-  const env = setup({ fetch: () => response(conversation()) });
-  await env.advance(120000);
-  const count = env.calls.length;
-  env.mutate(badge(env.root.firstChild), 'childList', [new Element()]);
-  env.mutate(env.root.firstChild, 'childList', [badge(env.root.firstChild)]);
-  env.mutate(env.root, 'childList', [new Element()]);
-  await env.advance(60000);
-  assert.equal(env.calls.length, count);
-});
-
-test('a long stream settling can refresh after retries are exhausted', async () => {
-  let saved = false;
-  const env = setup({ fetch: () => response(conversation(...(saved ? [apiMessage('a')] : []))) });
-  await env.advance(120000);
-  saved = true;
-  env.mutate(env.root.firstChild);
-  await env.advance(2000);
-  assert.equal(env.calls.length, 7);
-  assert.match(badge(env.root.firstChild).textContent, /Thinking · \d{4}-/);
-});
-
-test('respects rate limiting and request timeout', async () => {
-  const limited = setup({ fetch: () => response({}, 429, { 'Retry-After': '60' }) });
-  await limited.advance(60000);
-  assert.equal(limited.calls.length, 1);
-  await limited.advance(500);
-  assert.equal(limited.calls.length, 2);
-  const timedOut = setup({ fetch: (url, options) => new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('Timed out')))) });
-  await timedOut.advance(60500);
-  assert.equal(timedOut.calls[0][1].signal.aborted, true);
-  assert.equal(timedOut.warnings.length, 1);
-});
-
-test('reused DOM nodes lose stale time and badges are removed when role changes', async () => {
-  const assistant = message('a');
-  const env = setup({ nodes: [assistant] });
-  await env.advance(500);
-  assistant.attributes['data-message-id'] = 'b';
-  env.api.updateMetadata();
-  assert.equal(badge(assistant).textContent, 'GPT-6 Pro');
-  assistant.attributes['data-message-author-role'] = 'user';
-  env.api.updateMetadata();
-  assert.equal(badge(assistant), null);
-});
-
-test('reinjection cleans up old instance and avoids duplicate badges', async () => {
-  const env = setup();
-  const oldObserver = env.api.observer;
-  env.run();
-  assert.equal(oldObserver.disconnected, true);
-  await env.advance(500);
-  assert.equal(env.calls.length, 1);
-  assert.equal(env.root.querySelectorAll('.chatgpt-timestamp').length, 1);
-});
-
 function savedTranscript() {
   const fixture = require('./fixtures/chatgpt-transcript.json');
   const fromNode = (node) => {
@@ -395,74 +200,6 @@ function savedTranscript() {
   };
   return fixture.nodes.map(fromNode);
 }
-
-test('recognizes the saved October 2026 HTML with role heading beside the message', async () => {
-  const nodes = savedTranscript();
-  const env = setup({ nodes, fetch: () => response(conversation(apiMessage('message-2'))) });
-  assert.equal(env.root.querySelectorAll('[data-message-id]').length, 0);
-  assert.equal(env.root.querySelectorAll('[data-message-author-role]').length, 0);
-  const assistants = env.api.getAssistantMessages();
-  assert.equal(assistants.length, 1);
-  const assistant = assistants[0];
-  assert.equal(assistant.element.hasAttribute('data-chatgpt-selection-message-id'), true);
-  assert.equal(badge(assistant.element), null);
-  assert.equal(env.root.querySelectorAll('.chatgpt-timestamp').length, 0);
-  assert.equal(nodes[1].querySelector('[data-conversation-role]').childNodes.length, 0);
-  assert.equal(badge(nodes[0]), null);
-  await env.advance(500);
-  assert.match(badge(assistant.element).textContent, /^GPT-5\.6 Thinking · \d{4}-.* · 1$/);
-  assert.equal(env.calls.length, 1);
-});
-
-test('search-unit IDs also work without selection attributes or a role heading', async () => {
-  const assistant = new Element({
-    'data-chatgpt-search-unit-key': 'fallback-turn-0:2:assistant',
-    'data-chatgpt-search-message-ids': 'reasoning final final',
-  });
-  const user = new Element({
-    'data-chatgpt-search-unit-key': 'fallback-turn-0:0:user',
-    'data-chatgpt-search-message-ids': 'user',
-  });
-  const env = setup({ nodes: [user, assistant], fetch: () => response(conversation(apiMessage('final'))) });
-  assert.equal(env.api.getAssistantMessages().length, 1);
-  assert.equal(env.api.getAssistantMessages()[0].id, 'final');
-  assert.deepEqual(Array.from(env.api.getAssistantMessages()[0].ids), ['final', 'reasoning']);
-  await env.advance(500);
-  assert.match(badge(assistant).textContent, /Thinking · \d{4}-/);
-  assert.equal(badge(user), null);
-});
-
-test('selected final output never borrows the timestamp from a grouped reasoning message', async () => {
-  const wrapper = new Element({
-    'data-chatgpt-search-unit-key': 'fallback-turn-0:2:assistant',
-    'data-chatgpt-search-message-ids': 'reasoning final',
-  });
-  const assistant = new Element({ 'data-chatgpt-selection-message-id': 'final' });
-  wrapper.appendChild(new Element({ 'data-conversation-role': 'assistant' }));
-  wrapper.appendChild(assistant);
-  const env = setup({ nodes: [wrapper], fetch: () => response(conversation(apiMessage('reasoning'))) });
-  await env.advance(500);
-  assert.equal(badge(assistant), null);
-  await env.advance(120000);
-  assert.equal(env.calls.length, 6);
-  assert.equal(env.root.querySelectorAll('.chatgpt-timestamp').length, 0);
-});
-
-test('new selection IDs are rerendered after branching and retries still follow new transcript text', async () => {
-  const nodes = savedTranscript();
-  let saved = false;
-  const env = setup({ nodes, fetch: () => response(conversation(...(saved ? [apiMessage('branch')] : []))) });
-  const element = env.api.getAssistantMessages()[0].element;
-  element.attributes['data-chatgpt-selection-message-id'] = 'branch';
-  nodes[1].attributes['data-chatgpt-search-message-ids'] = 'branch branch';
-  env.mutate(element, 'attributes');
-  await env.advance(120000);
-  assert.equal(badge(element), null);
-  saved = true;
-  env.mutate(element);
-  await env.advance(2000);
-  assert.match(badge(element).textContent, /Thinking · \d{4}-/);
-});
 
 function makeLiveTurn(number = 30, { finalTime = 1790812800, model = 'gpt-6-pro' } = {}) {
   const mapping = { root: { id: 'root', parent: null, message: null } };
@@ -505,20 +242,77 @@ function makeLiveTurn(number = 30, { finalTime = 1790812800, model = 'gpt-6-pro'
   return { turn, surface, mapping, entry, snapshot, host, component, owner, root };
 }
 
-test('canonical graph supplies answer 30 with only one DOM turn while live snapshot supplies time/model', async () => {
-  const live = makeLiveTurn(30);
-  const env = setup({ nodes: [live.turn], fetch: () => response({ mapping: live.mapping, current_node: 'a30' }) });
-  assert.equal(env.api.getAssistantMessages().length, 1);
-  assert.match(badge(live.surface).textContent, /^GPT-6 Pro · \d{4}-/);
-  assert.doesNotMatch(badge(live.surface).textContent, / · 30$/);
-  await env.advance(120000);
-  assert.equal(env.calls.length, 1);
-  assert.match(badge(live.surface).textContent, / · 30$/);
-  const previous = makeLiveTurn(29);
-  env.root.insertBefore(previous.turn, live.turn);
-  env.api.updateMetadata();
-  assert.match(badge(previous.surface).textContent, / · 29$/);
-  assert.match(badge(live.surface).textContent, / · 30$/);
+function flatMessages(first, last, { parentLinks = false } = {}) {
+  const messages = [];
+  for (let i = first; i <= last; i++) {
+    const user = { id: `u${i}`, author: { role: 'user' }, create_time: 1790810000 + i * 100 };
+    const reasoning = apiMessage(`r${i}`, 1790810010 + i * 100);
+    const tool = { id: `t${i}`, author: { role: 'tool' }, create_time: 1790810020 + i * 100 };
+    const final = apiMessage(`a${i}`, 1790810030 + i * 100, { resolved_model_slug: 'gpt-6-pro' });
+    if (parentLinks) {
+      user.parent_message_id = i === 1 ? null : `a${i - 1}`;
+      reasoning.parent_message_id = user.id;
+      tool.parent_message_id = reasoning.id;
+      final.parent_message_id = tool.id;
+    }
+    messages.push(user, reasoning, tool, final);
+  }
+  return messages;
+}
+
+const historyPage = (messages, more, cursor = 'cursor', currentNode = 'a30') => ({
+  conversation_id: 'A',
+  current_node: currentNode,
+  messages,
+  page_info: { start_cursor: cursor, end_cursor: 'end', has_previous_page: more, has_next_page: false },
+});
+
+test('normalizes real timestamps and preserves unknown model names', () => {
+  const { api } = setup({ nodes: [] });
+  for (const value of [null, undefined, '', 'garbage', 0, -1, NaN, Infinity, 1e20]) assert.equal(api.normalizeTimestamp(value), null);
+  assert.equal(api.normalizeTimestamp(1790812800), 1790812800000);
+  assert.equal(api.normalizeTimestamp('1790812800'), 1790812800000);
+  assert.equal(api.normalizeTimestamp('2026-10-01T00:00:00Z'), 1790812800000);
+  assert.equal(api.normalizeTimestamp(1790812800000), 1790812800000);
+  assert.equal(api.formatModel('gpt-5-6-thinking'), 'GPT-5.6 Thinking');
+  assert.equal(api.formatModel('gpt-5-4-auto-thinking'), 'GPT-5.4 Thinking');
+  assert.equal(api.formatModel('gpt-5.4-auto-thinking'), 'GPT-5.4 Thinking');
+  assert.equal(api.formatModel('GPT-5-4-AUTO-THINKING'), 'GPT-5.4 Thinking');
+  assert.equal(api.formatModel('gpt-5-4-auto-instant'), 'GPT-5.4 Instant');
+  assert.equal(api.formatModel('gpt-5-4-auto'), 'GPT-5.4 Auto');
+  assert.equal(api.formatModel('gpt-5-4-auto-experimental'), 'GPT-5.4-auto-experimental');
+  assert.equal(api.formatModel('gpt-6-pro'), 'GPT-6 Pro');
+  assert.equal(api.formatModel('gpt-4o-mini'), 'GPT-4o Mini');
+  assert.equal(api.formatModel('new_model_v2'), 'new_model_v2');
+  assert.equal(api.formatModel('  '), null);
+  assert.match(api.formatTimestamp(1790812800000), /^\d{4}-\d{2}-\d{2} \w{3} \d{2}:\d{2}$/);
+});
+
+test('maps all assistant branches by ID and prefers resolved model metadata', () => {
+  const { api } = setup({ nodes: [] });
+  const data = api.readConversation(conversation(apiMessage('a', 1790812800, { resolved_model_slug: 'actual', server_ste_metadata: { model_slug: 'routed' }, model_slug: 'default' }), apiMessage('b', null, { server_ste_metadata: { model_slug: 'routed' } }), { id: 'user', author: { role: 'user' }, create_time: 1790812800 }));
+  assert.equal(data.size, 2);
+  assert.equal(data.get('a').model, 'actual');
+  assert.equal(data.get('b').model, 'routed');
+  assert.equal(data.get('b').timestamp, null);
+  assert.throws(() => api.readConversation({ error: 'denied' }), /Unsupported/);
+});
+
+test('handles nested role attributes, non-div messages, hidden branches and duplicate IDs', () => {
+  const wrapper = new Element({ 'data-message-author-role': 'assistant' });
+  const inner = new Element({ 'data-message-id': 'nested' });
+  wrapper.appendChild(inner);
+  const outer = new Element({ 'data-message-id': 'outer' });
+  outer.appendChild(new Element({ 'data-message-author-role': 'assistant' }));
+  const hidden = message('hidden');
+  hidden.attributes.hidden = '';
+  const env = setup({ nodes: [wrapper, outer, hidden, message('nested')] });
+  assert.deepEqual(
+    Array.from(env.api.getAssistantMessages(), ({ id }) => id),
+    ['nested', 'outer'],
+  );
+  assert.equal(badge(inner), null);
+  assert.equal(badge(outer), null);
 });
 
 test('branch numbering groups reasoning/tools/final output and rejects incomplete or cyclic ancestry', () => {
@@ -535,23 +329,6 @@ test('branch numbering groups reasoning/tools/final output and rejects incomplet
   assert.equal(api.getBranchTurnNumber(mapping, 'a30'), null);
   mapping.a30.parent = undefined;
   assert.equal(api.getBranchTurnNumber(mapping, 'a30'), null);
-});
-
-test('committed alternate is selected instead of stale React props', async () => {
-  const live = makeLiveTurn(7, { model: 'gpt-6-pro' });
-  const stale = makeLiveTurn(7, { model: 'stale-model' });
-  for (const key of ['root', 'owner', 'component', 'host']) {
-    stale[key].alternate = live[key];
-    live[key].alternate = stale[key];
-  }
-  stale.root.stateNode = live.root.stateNode;
-  live.turn.__reactFiber$fixture = stale.host;
-  const env = setup({ nodes: [live.turn], fetch: () => response({ mapping: live.mapping, current_node: 'a7' }) });
-  assert.match(badge(live.surface).textContent, /^GPT-6 Pro ·/);
-  await env.advance(500);
-  assert.match(badge(live.surface).textContent, / · 7$/);
-  assert.doesNotMatch(badge(live.surface).textContent, /stale-model/);
-  assert.equal(env.calls.length, 1);
 });
 
 test('snapshot from another conversation and ambiguous live mappings are rejected', () => {
@@ -591,53 +368,6 @@ test('live final answer never displays an earlier reasoning timestamp when final
   assert.doesNotMatch(badge(live.surface).textContent, /reasoning-model|2026-/);
 });
 
-test('live metadata refresh replaces model/time and preserves canonical branch number', async () => {
-  const live = makeLiveTurn(2);
-  const env = setup({ nodes: [live.turn], fetch: () => response({ mapping: live.mapping, current_node: 'a2' }) });
-  await env.advance(500);
-  live.mapping.a2.message.metadata.resolved_model_slug = 'gpt-5-6-thinking';
-  live.mapping.a2.message.create_time = '2026-10-01T00:30:00Z';
-  env.api.updateMetadata();
-  assert.match(badge(live.surface).textContent, /^GPT-5\.6 Thinking · .* · 2$/);
-  assert.equal(badge(live.surface).dataset.signature, JSON.stringify(['a2', 'GPT-5.6 Thinking', 1790814600000, 2]));
-});
-
-test('five-turn synthetic render window does not become answer 5 when canonical answer is 30', async () => {
-  const live = makeLiveTurn(30);
-  const rendered = { root: { id: 'root', parent: null, message: null } };
-  for (let i = 26; i <= 30; i++)
-    for (const prefix of ['u', 'r', 't', 'a']) {
-      const id = `${prefix}${i}`;
-      rendered[id] = { ...live.mapping[id] };
-    }
-  rendered.u26.parent = 'root';
-  live.snapshot.renderedConversation.mapping = rendered;
-  const env = setup({ nodes: [live.turn], fetch: () => response({ mapping: live.mapping, current_node: 'a30' }) });
-  assert.equal(env.api.getBranchTurnNumber(rendered, 'a30'), 5);
-  assert.doesNotMatch(badge(live.surface).textContent, / · 5$/);
-  await env.advance(500);
-  assert.match(badge(live.surface).textContent, / · 30$/);
-  const diagnostics = env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics();
-  assert.equal(diagnostics.largestRenderedNodeCount, 21);
-  assert.equal(diagnostics.canonicalNodeCount, 121);
-  assert.equal(diagnostics.numberedMessageCount, 60);
-  assert.equal(diagnostics.largestCanonicalAnswerNumber, 30);
-  env.api.updateMetadata();
-  assert.match(badge(live.surface).textContent, / · 30$/);
-});
-
-test('unavailable canonical history retains time/model and omits unproven global number', async () => {
-  const live = makeLiveTurn(5);
-  const env = setup({ nodes: [live.turn], fetch: () => response({}, 503) });
-  await env.advance(120000);
-  assert.match(badge(live.surface).textContent, /^GPT-6 Pro · \d{4}-/);
-  assert.doesNotMatch(badge(live.surface).textContent, / · 5$/);
-  assert.equal(env.calls.length, 6);
-  const diagnostics = env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics();
-  assert.equal(diagnostics.canonicalNodeCount, 0);
-  assert.equal(diagnostics.lastFetchError, 'Conversation request failed (503)');
-});
-
 test('explicitly paginated response and detached user root do not supply global answer numbers', () => {
   const { api } = setup({ nodes: [] });
   const data = conversation(apiMessage('a'));
@@ -648,137 +378,262 @@ test('explicitly paginated response and detached user root do not supply global 
   assert.equal(api.readConversation(data).get('a').turnNumber, null);
 });
 
-function flatMessages(first, last, { parentLinks = false } = {}) {
-  const messages = [];
-  for (let i = first; i <= last; i++) {
-    const user = { id: `u${i}`, author: { role: 'user' }, create_time: 1790810000 + i * 100 };
-    const reasoning = apiMessage(`r${i}`, 1790810010 + i * 100);
-    const tool = { id: `t${i}`, author: { role: 'tool' }, create_time: 1790810020 + i * 100 };
-    const final = apiMessage(`a${i}`, 1790810030 + i * 100, { resolved_model_slug: 'gpt-6-pro' });
-    if (parentLinks) {
-      user.parent_message_id = i === 1 ? null : `a${i - 1}`;
-      reasoning.parent_message_id = user.id;
-      tool.parent_message_id = reasoning.id;
-      final.parent_message_id = tool.id;
-    }
-    messages.push(user, reasoning, tool, final);
-  }
-  return messages;
-}
+const diagnostics = (env) => env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics();
+const observe = async (env, url = '/backend-api/conversations/A?num_turns=10&include_has_versions=true', init = {}) => {
+  const response = await env.context.window.fetch(url, init);
+  // Response.clone() uses asynchronous streams in Node, independently of our fake clock.
+  for (let i = 0; i < 8; i++) await new Promise(setImmediate);
+  await env.flush();
+  return response;
+};
 
-const historyPage = (messages, more, cursor = 'cursor', currentNode = 'a30') => ({
-  conversation_id: 'A',
-  current_node: currentNode,
-  messages,
-  page_info: { start_cursor: cursor, end_cursor: 'end', has_previous_page: more, has_next_page: false },
+test('does not issue independent requests or poll when page history is unavailable', async () => {
+  const env = setup();
+  await env.advance(120000);
+  assert.equal(env.calls.length, 0);
+  assert.equal(diagnostics(env).observedResponses, 0);
+  assert.equal(badge(env.root.firstChild).textContent, 'GPT-6 Pro');
 });
 
-test('plural messages endpoint loads all older pages and gives global answer 30', async () => {
-  const live = makeLiveTurn(30);
-  const env = setup({
-    nodes: [live.turn],
-    fetch: (url) => {
-      if (!url.includes('&before=')) return response(historyPage(flatMessages(26, 30), true, 'older/+?&='));
-      if (url.endsWith(encodeURIComponent('older/+?&='))) return response(historyPage(flatMessages(11, 26), true, 'oldest'));
-      return response(historyPage(flatMessages(1, 11), false));
-    },
-  });
-  await env.advance(500);
-  assert.equal(env.calls.length, 3);
-  assert.match(env.calls[1][0], /&before=older%2F%2B%3F%26%3D$/);
-  assert.match(badge(live.surface).textContent, / · 30$/);
-  const diagnostics = env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics();
-  assert.equal(diagnostics.canonicalNodeCount, 120);
-  assert.equal(diagnostics.historyPageCount, 3);
-  assert.equal(diagnostics.historySchema, 'messages');
-  assert.equal(diagnostics.historyEndpoint, 'conversations');
-  assert.equal(diagnostics.historyComplete, true);
-  assert.equal(diagnostics.largestCanonicalAnswerNumber, 30);
-});
-
-test('flat parent links select the real branch and group reasoning/tool messages', async () => {
-  const live = makeLiveTurn(30);
-  const messages = flatMessages(1, 30, { parentLinks: true });
-  messages.push({ ...apiMessage('side-response'), parent_message_id: 'u20' });
-  const env = setup({ nodes: [live.turn], fetch: () => response(historyPage(messages.reverse(), false)) });
-  await env.advance(500);
-  assert.match(badge(live.surface).textContent, / · 30$/);
-  assert.equal(env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics().historyComplete, true);
-});
-
-test('newest-first pages with missing tool timestamps are assembled in chronological order', async () => {
-  const live = makeLiveTurn(30);
-  const makePage = (first, last, more) => {
-    const messages = flatMessages(first, last);
-    messages.forEach((message) => {
-      if (message.author.role === 'tool') message.create_time = null;
-    });
-    return historyPage(messages.reverse(), more, 'earlier');
+test('observes real flat schema without consuming the host response or reading credentials', async () => {
+  const env = setup({ fetch: () => response(historyPage(flatMessages(1, 1), false, 'first', 'a1')), nodes: [message('a1')] });
+  const init = {
+    headers: new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('must not inspect headers');
+        },
+      },
+    ),
   };
-  const env = setup({ nodes: [live.turn], fetch: (url) => response(url.includes('&before=') ? makePage(1, 25, false) : makePage(26, 30, true)) });
-  await env.advance(500);
-  assert.equal(env.calls.length, 2);
-  assert.match(badge(live.surface).textContent, / · 30$/);
+  const host = await observe(env, undefined, init);
+  assert.equal((await host.json()).messages.length, 4);
+  assert.equal(env.calls.length, 1);
+  assert.match(badge(env.root.firstChild).textContent, / · 1$/);
+  assert.equal(diagnostics(env).historyComplete, true);
 });
 
-test('404 on plural path falls back once to the legacy mapping endpoint', async () => {
+test('partial initial window backfills with opaque app context and cursor pagination', async () => {
   const live = makeLiveTurn(30);
-  const env = setup({ nodes: [live.turn], fetch: (url) => (url.includes('/conversations/') ? response({}, 404) : response({ mapping: live.mapping, current_node: 'a30' })) });
-  await env.advance(500);
-  assert.equal(env.calls.length, 2);
-  assert.equal(env.calls[1][0], '/backend-api/conversation/A');
+  const context = { appContext: 'opaque' };
+  const env = setup({ nodes: [live.turn], fetch: (url) => response(url.includes('num_turns=10&') ? historyPage(flatMessages(26, 30), true, 'latest') : url.includes('&before=') ? historyPage(flatMessages(1, 25), false) : historyPage(flatMessages(26, 30), true, 'older/+?&=')) });
+  await observe(env, undefined, context);
+  assert.equal(env.calls.length, 3);
+  assert.match(env.calls[2][0], /&before=older%2F%2B%3F%26%3D$/);
+  assert.equal(env.calls[1][1].appContext, 'opaque');
   assert.match(badge(live.surface).textContent, / · 30$/);
-  assert.equal(env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics().historyEndpoint, 'conversation');
+  assert.equal(diagnostics(env).historyPageCount, 2);
+  env.api.updateMetadata();
+  assert.equal(diagnostics(env).committedTurnCount, 0);
 });
 
-test('unknown page completeness or newer missing pages never produce a guessed global number', async () => {
-  for (const info of [{}, { has_previous_page: false, has_next_page: true }]) {
-    const live = makeLiveTurn(30);
-    const env = setup({ nodes: [live.turn], fetch: () => response({ ...historyPage(flatMessages(26, 30), false), page_info: info }) });
-    await env.advance(500);
-    assert.doesNotMatch(badge(live.surface).textContent, / · 5$| · 30$/);
-    assert.equal(env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics().historyComplete, false);
+test('404 is observed without session-token reads or singular-endpoint retry storm', async () => {
+  const env = setup({ fetch: () => response({}, 404) });
+  await observe(env);
+  for (let i = 0; i < 20; i++) env.api.updateMetadata();
+  await env.advance(120000);
+  assert.equal(env.calls.length, 1);
+  assert.equal(diagnostics(env).canonicalNodeCount, 0);
+});
+
+test('flat path order wins over timestamp skew, duplicate times and metadata parent_id', () => {
+  const { api } = setup({ nodes: [] });
+  const rows = flatMessages(1, 3);
+  rows.forEach((m, i) => {
+    m.create_time = 1000 - i;
+    m.metadata = { ...m.metadata, parent_id: 'not-a-graph-parent' };
+  });
+  const records = rows.map(api.readFlatMessage);
+  const result = api.readFlatHistory(records, 'a3', true);
+  assert.equal(result.messages.get('a3').turnNumber, 3);
+  assert.equal(result.userTurns.get('u3'), 3);
+  assert.equal(Object.hasOwn(records[0], 'content'), false);
+  assert.equal(Object.hasOwn(records[0], 'metadata'), false);
+});
+
+test('unknown completeness and repeated cursors never publish a local window as global', async () => {
+  for (const more of [undefined, true]) {
+    const env = setup({ nodes: [message('a30')], fetch: () => response(historyPage(flatMessages(26, 30), more, 'same')) });
+    await observe(env);
+    assert.doesNotMatch(badge(env.root.firstChild).textContent, / · 5$| · 30$/);
+    assert.equal(diagnostics(env).historyComplete === true, false);
+    if (more) assert.match(diagnostics(env).lastFetchError, /repeated/);
   }
 });
 
-test('repeated cursors stop pagination before publishing partial numbers', async () => {
-  const live = makeLiveTurn(30);
-  const env = setup({ nodes: [live.turn], fetch: () => response(historyPage(flatMessages(26, 30), true, 'same')) });
-  await env.advance(500);
+test('proven numbers survive partial responses, DOM unmount/remount and missing time/model', async () => {
+  let partial = false;
+  const env = setup({ nodes: [message('a3')], fetch: () => response(partial ? { ...historyPage(flatMessages(3, 3), false, 'last', 'a3'), page_info: {} } : historyPage(flatMessages(1, 3), false, 'start', 'a3')) });
+  await observe(env);
+  env.root.firstChild.remove();
+  env.api.updateMetadata();
+  const remounted = message('a3');
+  env.root.appendChild(remounted);
+  env.api.updateMetadata();
+  assert.match(badge(remounted).textContent, / · 3$/);
+  partial = true;
+  await observe(env);
+  assert.match(badge(remounted).textContent, / · 3$/);
   assert.equal(env.calls.length, 2);
-  assert.doesNotMatch(badge(live.surface).textContent, / · 5$/);
-  assert.equal(env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics().lastFetchError, 'Missing or repeated history cursor');
 });
 
-test('pagination rejects conversation/branch changes and cross-page parent conflicts', async () => {
-  for (const changed of [{ conversation_id: 'another-conversation' }, { current_node: 'another-head' }, { messages: [{ ...flatMessages(26, 26, { parentLinks: true })[0], parent_message_id: 'different-parent' }] }]) {
-    const live = makeLiveTurn(30);
-    const env = setup({ nodes: [live.turn], fetch: (url) => response(url.includes('&before=') ? { ...historyPage(flatMessages(1, 26, { parentLinks: true }), false), ...changed } : historyPage(flatMessages(26, 30, { parentLinks: true }), true)) });
-    await env.advance(500);
-    assert.doesNotMatch(badge(live.surface).textContent, / · 30$/);
-    assert.equal(env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics().canonicalNodeCount, 0);
-    assert.ok(env.warnings.length);
-  }
+test('reasoning, tool calls, UI components and a regenerated answer stay in one answer group', () => {
+  const { api } = setup({ nodes: [] });
+  const rows = flatMessages(1, 2);
+  rows.splice(3, 0, { id: 'component', author: { role: 'assistant' }, channel: 'commentary', metadata: { is_visually_hidden_from_conversation: true } });
+  const result = api.readFlatHistory(rows.map(api.readFlatMessage), 'a2', true);
+  assert.equal(result.messages.get('r2').turnNumber, 2);
+  assert.equal(result.messages.get('a2').turnNumber, 2);
+  assert.equal(result.messages.get('component').turnNumber, null);
+  const branch = flatMessages(1, 2);
+  branch.at(-1).id = 'regenerated';
+  assert.equal(api.readFlatHistory(branch.map(api.readFlatMessage), 'regenerated', true).messages.get('regenerated').turnNumber, 2);
 });
 
-test('navigation cancels in-progress pagination without applying its result to a new conversation', async () => {
+test('new live answer anchors to canonical ancestry and survives render-window remount', async () => {
+  const live = makeLiveTurn(3);
+  const env = setup({ nodes: [live.turn], fetch: () => response(historyPage(flatMessages(1, 2), false, 'first', 'a2')) });
+  await observe(env);
+  assert.match(badge(live.surface).textContent, / · 3$/);
+  assert.equal(diagnostics(env).largestCanonicalAnswerNumber, 2);
+  const newer = makeLiveTurn(3);
+  live.turn.remove();
+  env.root.appendChild(newer.turn);
+  env.api.updateMetadata();
+  assert.match(badge(newer.surface).textContent, / · 3$/);
+  assert.equal(env.calls.length, 1);
+});
+
+test('synthetic roots without known ancestors cannot provide global numbering', async () => {
   const live = makeLiveTurn(30);
-  let finishOlder;
+  const rendered = { root: live.mapping.root };
+  for (const prefix of ['u', 'r', 't', 'a']) rendered[prefix + '30'] = { ...live.mapping[prefix + '30'] };
+  rendered.u30.parent = 'root';
+  live.snapshot.renderedConversation.mapping = rendered;
+  const env = setup({ nodes: [live.turn] });
+  assert.doesNotMatch(badge(live.surface).textContent, / · 1$| · 30$/);
+  assert.equal(diagnostics(env).canonicalNodeCount, 0);
+});
+
+test('navigation aborts backfill and late A→B→A results are rejected', async () => {
+  let finish;
   const env = setup({
-    nodes: [live.turn],
+    nodes: [message('a30')],
     fetch: (url) =>
-      url.includes('&before=')
+      url.includes('num_turns=100')
         ? new Promise((resolve) => {
-            finishOlder = resolve;
+            finish = resolve;
           })
         : response(historyPage(flatMessages(26, 30), true)),
   });
-  await env.advance(500);
-  assert.equal(env.calls.length, 2);
+  await observe(env);
+  const signal = env.calls[1][1].signal;
   env.context.location.pathname = '/c/B';
   env.api.updateMetadata();
-  assert.equal(env.calls[1][1].signal.aborted, true);
-  finishOlder(response(historyPage(flatMessages(1, 25), false)));
+  env.context.location.pathname = '/c/A';
+  env.api.updateMetadata();
+  assert.equal(signal.aborted, true);
+  finish(response(historyPage(flatMessages(1, 30), false)));
+  for (let i = 0; i < 5; i++) await new Promise(setImmediate);
+  assert.equal(diagnostics(env).canonicalNodeCount, 0);
+});
+
+test('opaque Request inputs preserve context and override the app abort signal', async () => {
+  let n = 0;
+  const env = setup({ nodes: [message('a1')], fetch: () => response(historyPage(flatMessages(1, 1), n++ === 0, 'first', 'a1')) });
+  const controller = new AbortController();
+  const input = new Request('https://chatgpt.com/backend-api/conversations/A?num_turns=10', { signal: controller.signal, credentials: 'same-origin' });
+  await observe(env, input);
+  assert.equal(env.calls.length, 2);
+  assert.equal(env.calls[0][0], input);
+  const backfill = env.calls[1][0];
+  assert.ok(backfill instanceof Request);
+  assert.match(backfill.url, /num_turns=100/);
+  assert.equal(backfill.credentials, 'same-origin');
+  controller.abort();
+  assert.equal(backfill.signal.aborted, false);
+  assert.match(badge(env.root.firstChild).textContent, / · 1$/);
+});
+
+test('reinjection restores fetch wrappers and avoids duplicate badges', async () => {
+  const env = setup();
+  const original = env.context.window.fetch;
+  const old = env.api.observer;
+  env.run();
+  assert.equal(old.disconnected, true);
+  assert.notEqual(env.context.window.fetch, original);
+  assert.equal(env.root.querySelectorAll('.chatgpt-timestamp').length, 1);
+});
+
+test('metadata projection drops bodies, author details, attachments and unrelated fields', () => {
+  const { api } = setup({ nodes: [] });
+  const projected = api.projectHistory({ ...historyPage([{ ...apiMessage('a'), content: { parts: ['private-text'] }, author: { role: 'assistant', name: 'private-name' }, metadata: { model_slug: 'gpt-6', private: 'private-value' } }], false, 'first', 'a'), title: 'private-title', owner: 'private-owner' });
+  assert.doesNotMatch(JSON.stringify(projected), /private-/);
+  assert.equal(projected.messages[0].metadata.resolved_model_slug, 'gpt-6');
+});
+
+test('transient backfill failures retry within one job, then recover', async () => {
+  const env = setup({ nodes: [] });
+  let calls = 0;
+  const pending = env.api.requestConversationJson('/metadata', new AbortController().signal, async () => (++calls < 3 ? response({}, 503) : response(historyPage(flatMessages(1, 1), false, 'start', 'a1'))));
   await env.flush();
-  assert.equal(env.context.window[Symbol.for('chatgpt-metadata-extension')].diagnostics().canonicalNodeCount, 0);
+  await env.advance(4500);
+  assert.equal((await pending).current_node, 'a1');
+  assert.equal(calls, 3);
+});
+
+test('rate limit delay respects Retry-After and navigation cancels retry waits', async () => {
+  const env = setup({ nodes: [] });
+  const controller = new AbortController();
+  let calls = 0;
+  const pending = env.api.requestConversationJson('/metadata', controller.signal, async () => {
+    calls++;
+    return response({}, 429, { 'Retry-After': '45' });
+  });
+  const rejected = assert.rejects(pending, /aborted/);
+  await env.flush();
+  await env.advance(44000);
+  assert.equal(calls, 1);
+  controller.abort();
+  await rejected;
+  await env.advance(60000);
+  assert.equal(calls, 1);
+});
+
+test('branch-linked flat records choose ancestry rather than unrelated alternate responses', () => {
+  const { api } = setup({ nodes: [] });
+  const rows = flatMessages(1, 3, { parentLinks: true });
+  rows.push({ ...apiMessage('alternate'), parent_message_id: 'u2' });
+  const result = api.readFlatHistory(rows.reverse().map(api.readFlatMessage), 'a3', true);
+  assert.equal(result.messages.get('a3').turnNumber, 3);
+  assert.equal(result.messages.get('alternate').turnNumber, null);
+});
+
+test('a floating conversation panel cannot donate messages to the current conversation', () => {
+  const surface = new Element({ 'data-chatgpt-selection-message-id': 'other', 'data-chatgpt-selection-conversation-id': 'B', 'data-conversation-role': 'assistant' });
+  const env = setup({ nodes: [message('current'), surface] });
+  assert.deepEqual(
+    Array.from(env.api.getAssistantMessages(), (x) => x.id),
+    ['current'],
+  );
+  assert.equal(badge(surface), null);
+});
+
+test('same-head observations refresh final time/model without refetching history', async () => {
+  let model = 'first-model';
+  const env = setup({
+    nodes: [message('a1')],
+    fetch: () => {
+      const rows = flatMessages(1, 1);
+      rows.at(-1).metadata.resolved_model_slug = model;
+      return response(historyPage(rows, false, 'start', 'a1'));
+    },
+  });
+  await observe(env);
+  model = 'resolved-model';
+  await observe(env);
+  await env.advance(100);
+  assert.match(badge(env.root.firstChild).textContent, /^resolved-model .* · 1$/);
+  assert.equal(env.calls.length, 2);
 });

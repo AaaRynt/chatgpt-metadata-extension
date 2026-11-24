@@ -12,23 +12,20 @@
   const SELECTION_SELECTOR = '[data-chatgpt-selection-message-id]';
   const SEARCH_SELECTOR = '[data-chatgpt-search-message-ids]';
   const COLORS = { model: '#98c379', timestamp: '#56b6c2', turnNumber: '#e06c75' };
-  const RETRY_DELAYS = [1500, 3000, 6000, 12000, 30000];
-  const REQUEST_INTERVAL = 3000;
   const REQUEST_TIMEOUT = 60000;
   const MAX_HISTORY_PAGES = 100;
   const MAX_HISTORY_MESSAGES = 50000;
-  const fetch = window.fetch.bind(window);
+  const originalFetch = window.fetch;
+  const fetch = originalFetch.bind(window);
 
   let conversationId = null;
   let metadataById = new Map();
   let request = null;
-  let nextRequestAt = 0;
-  let retryKey = '';
-  let retryCount = 0;
-  let retryTimer;
+  let routeEpoch = 0;
   let renderTimer;
-  let settleTimer;
-  let accessToken = null;
+  let userTurns = new Map();
+  let observedResponses = 0;
+  const conversationCaches = new Map();
   let disposed = false;
   let liveDiagnostics = {};
   let lastFetchError = null;
@@ -289,6 +286,8 @@
       // In the new transcript, the role heading is a sibling of the selection
       // container. Insert into the visible container, never into that sr-only heading.
       const element = candidate.matches(SELECTION_SELECTOR) ? candidate : (candidate.querySelector(SELECTION_SELECTOR) ?? candidate);
+      const ownerId = element.getAttribute('data-chatgpt-selection-conversation-id');
+      if (ownerId && ownerId !== conversationId) continue;
       const unit = element.closest(SEARCH_SELECTOR) ?? element;
       const roleElement = element.matches(ROLE_SELECTOR) ? element : (element.closest(ROLE_SELECTOR) ?? element.querySelector(ROLE_SELECTOR) ?? unit.querySelector(ROLE_SELECTOR));
       const role = roleElement?.getAttribute('data-message-author-role') ?? roleElement?.getAttribute('data-conversation-role');
@@ -314,8 +313,8 @@
         timestamp: live.timestamp ?? saved?.timestamp,
         model: live.model ?? saved?.model,
         // renderedConversation is a projection and may have a synthetic root.
-        // Only the separately requested conversation graph can supply the number.
-        turnNumber: saved?.turnNumber ?? null,
+        // Numbers come from complete history or a path anchored to known history.
+        turnNumber: saved?.turnNumber ?? live.turnNumber ?? null,
       };
     }
     const direct = metadataById.get(id);
@@ -332,6 +331,8 @@
     liveDiagnostics = { visibleAssistantCount: messages.length, committedTurnCount: 0, entryCount: 0, snapshotCount: 0, resolvedMessageCount: 0, largestRenderedNodeCount: 0, largestRenderedTurnCount: 0 };
     const turnCache = new Map();
     for (const message of messages) {
+      const saved = metadataById.get(message.id);
+      if (saved?.turnNumber != null && saved.timestamp != null && saved.model) continue;
       const turn = message.element.closest('[data-turn-key]');
       if (!turn) continue;
       if (!turnCache.has(turn)) {
@@ -375,12 +376,26 @@
       const chosen = selected.length ? selected : preferred;
       if (new Set(chosen.map((item) => item.id)).size !== 1) continue;
       const candidate = chosen[0];
+      const anchors = new Map();
+      for (const [id, data] of metadataById) {
+        if (data.turnNumber != null) anchors.set(id, { count: data.turnNumber, hasUser: true, answered: true });
+      }
+      for (const [id, number] of userTurns) anchors.set(id, { count: number - 1, hasUser: true, answered: false });
+      // Require a real known ancestor, never the render window's synthetic root.
+      let cursor = candidate.id;
+      const seen = new Set();
+      while (cursor && !anchors.has(cursor) && !seen.has(cursor)) {
+        seen.add(cursor);
+        cursor = ownValue(ownValue(mapping, cursor), 'parent');
+      }
+      const turnNumber = anchors.has(cursor) ? getBranchTurnNumber(mapping, candidate.id, anchors) : null;
+      if (turnNumber != null) metadataById.set(candidate.id, { timestamp: normalizeTimestamp(candidate.data.create_time), model: getModel(candidate.data), turnNumber });
       liveDiagnostics.resolvedMessageCount++;
       liveByElement.set(message.element, {
         resolvedId: candidate.id,
         timestamp: normalizeTimestamp(candidate.data.create_time),
         model: getModel(candidate.data),
-        turnNumber: null,
+        turnNumber,
       });
     }
     return liveByElement;
@@ -435,38 +450,20 @@
     });
   }
 
-  function clearRetry() {
-    window.clearTimeout(retryTimer);
-    retryTimer = undefined;
-  }
-
   function syncConversation() {
     const id = getConversationId();
     if (id === conversationId) return;
+    if (conversationId) conversationCaches.set(conversationId, { metadataById, userTurns });
     conversationId = id;
-    metadataById = new Map();
+    routeEpoch++;
+    metadataById = conversationCaches.get(id)?.metadataById ?? new Map();
+    userTurns = conversationCaches.get(id)?.userTurns ?? new Map();
+    while (conversationCaches.size > 4) conversationCaches.delete(conversationCaches.keys().next().value);
     lastFetchError = null;
     historyDiagnostics = { canonicalNodeCount: 0, numberedMessageCount: 0, largestCanonicalAnswerNumber: null };
     request?.controller.abort();
     request = null;
-    nextRequestAt = 0;
-    retryKey = '';
-    retryCount = 0;
-    clearRetry();
-    window.clearTimeout(settleTimer);
     document.querySelectorAll(`.${METADATA_CLASS}`).forEach((badge) => badge.remove());
-  }
-
-  function scheduleFetch(delay = 0) {
-    if (disposed || !conversationId || request || retryTimer !== undefined) return;
-    const wait = Math.max(delay, nextRequestAt - Date.now());
-    retryTimer = window.setTimeout(
-      () => {
-        retryTimer = undefined;
-        void loadMetadata();
-      },
-      Math.max(0, wait),
-    );
   }
 
   function updateMetadata() {
@@ -475,29 +472,6 @@
     const messages = getAssistantMessages();
     const liveByElement = collectLiveMetadata(messages);
     renderMetadata(messages, liveByElement);
-    // No requests on home, temporary-chat, or share pages without a conversation ID.
-    if (!conversationId) return;
-
-    const missing = messages
-      .filter((message) => {
-        const data = getMessageMetadata(message, liveByElement);
-        return data?.timestamp == null || !data?.model || data?.turnNumber == null;
-      })
-      .map(({ ids }) => ids);
-    if (!missing.length) {
-      clearRetry();
-      retryKey = '';
-      retryCount = 0;
-      return;
-    }
-
-    const key = JSON.stringify(missing);
-    if (key !== retryKey) {
-      clearRetry();
-      retryKey = key;
-      retryCount = 0;
-      scheduleFetch(500);
-    }
   }
 
   function scheduleRender() {
@@ -562,13 +536,10 @@
       }
       path.reverse();
     } else {
-      // The new endpoint returns the selected branch as a flat list. Prefer
-      // creation order when all timestamps are known; otherwise prove direction
-      // from the current node's position in the assembled list.
+      // The observed endpoint returns the selected branch in path order.
+      // Timestamps are not a topology: clocks and tool completion can be out of order.
       const ordered = [...records];
-      if (ordered.every((record) => record.timestamp != null)) {
-        ordered.sort((a, b) => a.timestamp - b.timestamp);
-      } else if (ordered[0]?.id === current.id && ordered.length > 1) {
+      if (ordered[0]?.id === current.id && ordered.length > 1) {
         ordered.reverse();
       } else if (ordered.at(-1)?.id !== current.id) {
         return { messages, complete: false };
@@ -577,6 +548,7 @@
       path = ordered.slice(0, index + 1);
     }
 
+    const userTurns = new Map();
     let count = 0;
     let hasUser = false;
     let answered = false;
@@ -585,58 +557,81 @@
       if (record.role === 'user') {
         hasUser = true;
         answered = false;
+        userTurns.set(record.messageId, count + 1);
       } else if (record.role === 'assistant' && hasUser) {
         if (!answered) count++;
         answered = true;
         messages.get(record.messageId).turnNumber = count;
       }
     }
-    return { messages, complete: true };
+    return { messages, userTurns, complete: true };
   }
 
-  async function requestConversationJson(url, signal) {
-    const options = { credentials: 'same-origin', cache: 'no-store', signal };
-    const get = () => fetch(url, { ...options, headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
-    let response = await get();
+  function projectHistory(data) {
+    const projectMessage = (message) =>
+      message && {
+        id: message.id,
+        author: { role: message.author?.role },
+        create_time: message.create_time,
+        metadata: { resolved_model_slug: getModel(message), is_visually_hidden_from_conversation: message.metadata?.is_visually_hidden_from_conversation },
+      };
+    const result = {
+      conversation_id: data.conversation_id ?? data.id,
+      current_node: data.current_node,
+      page_info: data.page_info && { ...data.page_info },
+      is_partial: data.is_partial,
+      has_more: data.has_more,
+      has_more_before: data.has_more_before,
+      pagination: data.pagination && { has_more: data.pagination.has_more },
+    };
+    if (Array.isArray(data.messages))
+      result.messages = data.messages.map((item) => {
+        const message = projectMessage(item.message ?? item);
+        const record = item.message ? { id: item.id, message } : message;
+        for (const key of ['parent', 'parent_message_id']) {
+          if (Object.prototype.hasOwnProperty.call(item, key)) record[key] = item[key];
+          else if (item.message && Object.prototype.hasOwnProperty.call(item.message, key)) record[key] = item.message[key];
+        }
+        return record;
+      });
+    if (data.mapping && typeof data.mapping === 'object') result.mapping = Object.fromEntries(Object.entries(data.mapping).map(([id, node]) => [id, { id: node?.id, parent: node?.parent, message: projectMessage(node?.message) }]));
+    return result;
+  }
 
-    if (response.status === 401 || response.status === 403) {
-      accessToken = null;
-      // Keep only the logged-in session token in memory; never log or persist it.
-      const sessionResponse = await fetch('/api/auth/session', options);
-      if (!sessionResponse.ok) throw new Error(`Session request failed (${sessionResponse.status})`);
-      const session = await sessionResponse.json();
-      if (typeof session?.accessToken !== 'string' || !session.accessToken) throw new Error('No authenticated ChatGPT session');
-      accessToken = session.accessToken;
-      response = await get();
-    }
-
-    if (!response.ok) {
-      const error = new Error(`Conversation request failed (${response.status})`);
-      error.status = response.status;
-      error.endpoint = url.includes('/conversations/') ? 'conversations' : 'conversation';
-      if (response.status === 429) {
-        const retryAfter = response.headers.get('Retry-After');
-        const seconds = retryAfter ? Number(retryAfter) : NaN;
-        const retryAt = Number.isFinite(seconds) ? Date.now() + seconds * 1000 : Date.parse(retryAfter);
-        error.retryAt = Math.max(Date.now() + 30000, Number.isFinite(retryAt) ? retryAt : 0);
+  async function requestConversationJson(url, signal, send) {
+    let response;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (signal.aborted) throw new Error('Conversation request aborted');
+      try {
+        response = await send(url, signal);
+      } catch {
+        if (signal.aborted || attempt === 2) throw new Error('Conversation request failed (network)');
+        response = null;
       }
-      throw error;
+      if (response?.ok) break;
+      if (response && (attempt === 2 || (response.status !== 429 && response.status < 500))) throw new Error(`Conversation request failed (${response.status})`);
+      const retryAfter = response?.headers.get('Retry-After');
+      const seconds = Number(retryAfter);
+      const retryDelay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(retryAfter) - Date.now();
+      const delay = response?.status === 429 ? Math.max(30000, Number.isFinite(retryDelay) ? retryDelay : 0) : 1500 * (attempt + 1);
+      await new Promise((resolve, reject) => {
+        const stop = () => {
+          window.clearTimeout(timer);
+          reject(new Error('Conversation request aborted'));
+        };
+        const timer = window.setTimeout(() => {
+          signal.removeEventListener('abort', stop);
+          resolve();
+        }, delay);
+        signal.addEventListener('abort', stop, { once: true });
+      });
     }
-    return response.json();
+    return projectHistory(await response.json());
   }
 
-  async function fetchConversation(id, signal) {
-    const base = `/backend-api/conversations/${encodeURIComponent(id)}?include_has_versions=true&num_turns=100`;
-    let first;
-    try {
-      first = await requestConversationJson(base, signal);
-    } catch (error) {
-      // Some accounts still serve the legacy, singular path.
-      if (error.status !== 404) throw error;
-      const data = await requestConversationJson(`/backend-api/conversation/${encodeURIComponent(id)}`, signal);
-      if ((data.conversation_id ?? data.id) != null && (data.conversation_id ?? data.id) !== id) throw new Error('Conversation response belongs to another conversation');
-      const messages = readConversation(data);
-      return { messages, nodeCount: Object.keys(data.mapping).length, pageCount: 1, schema: 'mapping', endpoint: 'conversation', complete: [...messages.values()].some((value) => value.turnNumber != null) };
+  async function fetchConversation(id, signal, first, base, send) {
+    if (!first.mapping && (first.page_info?.has_previous_page === true || first.page_info?.has_next_page === true)) {
+      first = await requestConversationJson(base, signal, send);
     }
     if ((first.conversation_id ?? first.id) != null && (first.conversation_id ?? first.id) !== id) throw new Error('Conversation response belongs to another conversation');
     if (first.mapping && typeof first.mapping === 'object' && !Array.isArray(first.mapping)) {
@@ -670,7 +665,7 @@
       if (typeof cursor !== 'string' || !cursor || cursors.has(cursor)) throw new Error('Missing or repeated history cursor');
       if (!records.length || pages.length >= MAX_HISTORY_PAGES) throw new Error('Conversation history exceeded the page limit');
       cursors.add(cursor);
-      page = await requestConversationJson(`${base}&before=${encodeURIComponent(cursor)}`, signal);
+      page = await requestConversationJson(`${base}&before=${encodeURIComponent(cursor)}`, signal, send);
     }
 
     const byId = new Map();
@@ -689,20 +684,24 @@
     return { ...result, nodeCount: records.length, pageCount: pages.length, schema: 'messages', endpoint: 'conversations' };
   }
 
-  async function loadMetadata() {
+  async function loadMetadata(first, base, send) {
     if (disposed) return;
     syncConversation();
-    if (!conversationId || request) return;
-    const current = { id: conversationId, controller: new AbortController() };
+    if (!conversationId || request || !first || !send) return;
+    const current = { id: conversationId, head: first.current_node, controller: new AbortController() };
     request = current;
-    nextRequestAt = Date.now() + REQUEST_INTERVAL;
     const timeout = window.setTimeout(() => current.controller.abort(), REQUEST_TIMEOUT);
 
     try {
-      const result = await fetchConversation(current.id, current.controller.signal);
+      const result = await fetchConversation(current.id, current.controller.signal, first, base, send);
       // A→B→A navigation invalidates the first request even if the IDs match again.
       if (disposed || request !== current || getConversationId() !== current.id) return;
-      metadataById = result.messages;
+      // Partial snapshots and late pages must never erase proven numbers.
+      for (const [id, data] of result.messages) {
+        const old = metadataById.get(id);
+        metadataById.set(id, { timestamp: data.timestamp ?? old?.timestamp, model: data.model ?? old?.model, turnNumber: data.turnNumber ?? old?.turnNumber ?? null });
+      }
+      for (const [id, number] of result.userTurns ?? []) userTurns.set(id, number);
       historyDiagnostics = {
         canonicalNodeCount: result.nodeCount,
         historyPageCount: result.pageCount,
@@ -715,20 +714,74 @@
       lastFetchError = null;
     } catch (error) {
       if (disposed || request !== current || getConversationId() !== current.id) return;
-      lastFetchError = error.message;
       historyDiagnostics.lastFailedEndpoint = error.endpoint ?? null;
-      if (error.retryAt) nextRequestAt = Math.max(nextRequestAt, error.retryAt);
-      if (retryCount === 0) console.warn('[ChatGPT Metadata]', error.message);
+      // Report status only, never URLs, headers, response bodies, or host exceptions.
+      lastFetchError = current.controller.signal.aborted ? 'History request aborted or timed out' : /^Conversation |^Unsupported |^Missing |^Conflicting /.test(error.message) ? error.message : 'History request failed';
     } finally {
       window.clearTimeout(timeout);
       if (!disposed && request === current) {
         request = null;
         updateMetadata();
-        // New replies can enter the DOM before the server saves their metadata.
-        if (retryKey && retryCount < RETRY_DELAYS.length) scheduleFetch(RETRY_DELAYS[retryCount++]);
       }
     }
   }
+
+  const observedFetch = function (...args) {
+    const result = Reflect.apply(originalFetch, this, args);
+    let url;
+    try {
+      url = new URL(typeof args[0] === 'string' ? args[0] : args[0]?.url, location.href);
+    } catch {
+      return result;
+    }
+    const match = url.origin === location.origin && url.pathname.match(/^\/backend-api\/(?:conversations|conversation)\/([^/]+)$/);
+    if (!match || (args[1]?.method ?? args[0]?.method ?? 'GET').toUpperCase() !== 'GET') return result;
+    const id = decodeURIComponent(match[1]);
+    syncConversation();
+    const epoch = routeEpoch;
+    // Don't delay ChatGPT's fetch promise or consume its original response body.
+    void result
+      .then(async (response) => {
+        if (disposed || !response.ok || epoch !== routeEpoch || getConversationId() !== id) return;
+        const data = projectHistory(await response.clone().json());
+        if (disposed || epoch !== routeEpoch || getConversationId() !== id) return;
+        syncConversation();
+        observedResponses++;
+        // Refresh available time/model even when the branch number is cached.
+        for (const item of data.messages ?? []) {
+          const record = readFlatMessage(item);
+          if (record.role !== 'assistant') continue;
+          const old = metadataById.get(record.messageId);
+          metadataById.set(record.messageId, { timestamp: record.timestamp ?? old?.timestamp, model: record.model ?? old?.model, turnNumber: old?.turnNumber ?? null });
+        }
+        // Deduplicate the same head; a newer selected branch supersedes old work.
+        if (request?.head === data.current_node) return;
+        if (request) {
+          request.controller.abort();
+          request = null;
+        }
+        const head = data.current_node;
+        if (head && metadataById.get(head)?.turnNumber != null) {
+          scheduleRender();
+          return;
+        }
+        url.searchParams.delete('before');
+        url.searchParams.delete('after');
+        url.searchParams.set('num_turns', '100');
+        url.searchParams.set('include_has_versions', 'true');
+        const send = (target, signal) => {
+          const init = { ...args[1], signal };
+          // Copy request context opaquely; never inspect authentication headers.
+          return typeof args[0] === 'object' && args[0] !== null && typeof Request !== 'undefined' && args[0] instanceof Request ? fetch(new Request(new URL(target, location.origin), { method: 'GET', headers: args[0].headers, credentials: args[0].credentials, ...init })) : fetch(target, init);
+        };
+        await loadMetadata(data, url.pathname + url.search, send);
+      })
+      .catch(() => {
+        if (!disposed && epoch === routeEpoch) lastFetchError = 'Unable to read observed conversation history';
+      });
+    return result;
+  };
+  window.fetch = observedFetch;
 
   const observer = new MutationObserver((records) => {
     const relevant = records.filter((record) => {
@@ -740,18 +793,6 @@
     });
     if (!relevant.length) return;
     scheduleRender();
-    const messageChanged = relevant.some((record) => {
-      const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
-      return target?.closest(MESSAGE_SELECTOR) || [...(record.addedNodes ?? [])].some((node) => node.nodeType === 1 && (node.matches(MESSAGE_SELECTOR) || node.querySelector(MESSAGE_SELECTOR)));
-    });
-    if (!messageChanged) return;
-    window.clearTimeout(settleTimer);
-    settleTimer = window.setTimeout(() => {
-      // Refresh once after a long stream finishes, even if early retries ran out.
-      if (disposed) return;
-      updateMetadata();
-      if (retryKey && retryCount >= RETRY_DELAYS.length) scheduleFetch();
-    }, 2000);
   });
   observer.observe(document.documentElement, {
     childList: true,
@@ -761,18 +802,29 @@
     attributeFilter: ['data-message-id', 'data-message-author-role', 'data-message-model-slug', 'data-chatgpt-selection-message-id', 'data-chatgpt-selection-conversation-id', 'data-chatgpt-search-message-ids', 'data-chatgpt-search-unit-key', 'data-content-search-unit-key', 'data-conversation-role', 'data-turn-key'],
   });
 
-  const routeTimer = window.setInterval(() => {
+  const historyMethods = new Map();
+  for (const name of ['pushState', 'replaceState']) {
+    if (typeof window.history?.[name] !== 'function') continue;
+    const original = window.history[name];
+    const wrapped = function (...args) {
+      const result = Reflect.apply(original, this, args);
+      syncConversation();
+      scheduleRender();
+      return result;
+    };
+    historyMethods.set(name, { original, wrapped });
+    window.history[name] = wrapped;
+  }
+  function routeChanged() {
+    syncConversation();
     scheduleRender();
-  }, 3000);
-  window.addEventListener('popstate', scheduleRender);
+  }
+  window.addEventListener('popstate', routeChanged);
   window.addEventListener('online', recover);
   document.addEventListener('visibilitychange', recover);
 
   function recover() {
     if (document.visibilityState === 'hidden') return;
-    retryKey = '';
-    retryCount = 0;
-    clearRetry();
     scheduleRender();
   }
 
@@ -780,17 +832,18 @@
     disposed = true;
     observer.disconnect();
     request?.controller.abort();
-    window.clearInterval(routeTimer);
+    if (window.fetch === observedFetch) window.fetch = originalFetch;
+    for (const [name, { original, wrapped }] of historyMethods) if (window.history[name] === wrapped) window.history[name] = original;
     window.clearTimeout(renderTimer);
-    window.clearTimeout(settleTimer);
-    clearRetry();
-    window.removeEventListener('popstate', scheduleRender);
+    window.removeEventListener('popstate', routeChanged);
     window.removeEventListener('online', recover);
     document.removeEventListener('visibilitychange', recover);
-    accessToken = null;
+    conversationCaches.clear();
+    metadataById.clear();
+    userTurns.clear();
   };
 
-  window[INSTANCE_KEY].diagnostics = () => ({ numberingSource: 'conversation-endpoint', ...liveDiagnostics, ...historyDiagnostics, lastFetchError });
+  window[INSTANCE_KEY].diagnostics = () => ({ numberingSource: 'observed-conversation-history', observedResponses, ...liveDiagnostics, ...historyDiagnostics, cachedNumberedMessageCount: [...metadataById.values()].filter((data) => data.turnNumber != null).length, historyRequestInFlight: request !== null, lastFetchError });
 
   updateMetadata();
 })();
